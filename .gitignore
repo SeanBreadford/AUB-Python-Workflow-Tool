@@ -1,0 +1,13 @@
+dist/
+build/
+.venv/
+
+# Python bytecode and tooling caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+
+# Local environment files
+.env
+.env.*
