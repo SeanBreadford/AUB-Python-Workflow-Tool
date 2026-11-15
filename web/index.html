@@ -19,9 +19,11 @@
       </label>
       <label class="field">
         <span>You</span>
-        <input id="user" type="text" autocomplete="nickname" spellcheck="false">
+        <input id="user" type="text" autocomplete="nickname" spellcheck="false"
+               title="Your name, shown next to changes you make">
       </label>
-      <button id="refresh" class="button" type="button" title="Rescan the project folder">Refresh</button>
+      <button id="refresh" class="button" type="button" title="Look for new files in the project folder">Refresh</button>
+      <button id="help" class="button" type="button" aria-label="How it works" title="How it works">?</button>
     </div>
   </header>
 
@@ -29,13 +31,13 @@
 
   <div class="toolbar">
     <div class="segmented" role="tablist" aria-label="View">
-      <button id="view-grid" type="button" role="tab" aria-selected="true">Grid</button>
+      <button id="view-grid" type="button" role="tab" aria-selected="true">Shots &amp; Assets</button>
       <button id="view-activity" type="button" role="tab" aria-selected="false">Activity</button>
     </div>
     <nav id="legend" class="legend" aria-label="Show only tasks with these statuses"></nav>
     <div class="toggles">
       <button id="toggle-mine" class="toggle" type="button" aria-pressed="false"
-              title="Only shots and assets with a task assigned to you">Assigned to me</button>
+              title="Only shots and assets with a task assigned to you">My Tasks</button>
       <button id="toggle-attention" class="toggle" type="button" aria-pressed="false"
               title="Only tasks with a warning: changed after approval, version clash, stalled…">Needs attention</button>
     </div>
@@ -59,21 +61,29 @@
     <div id="task-alerts" class="alerts" role="status"></div>
 
     <section class="panel-section" aria-labelledby="form-title">
-      <h3 id="form-title">Update</h3>
+      <h3 id="form-title">What's next</h3>
+      <p id="task-summary" class="task-summary"></p>
       <form id="task-form" class="task-form">
-        <label class="field">
-          <span>Status</span>
-          <select id="form-status"></select>
-        </label>
-        <label class="field">
-          <span>Assignee</span>
-          <input id="form-assignee" type="text" list="people" autocomplete="off" spellcheck="false">
-        </label>
         <label class="field wide">
-          <span>Comment</span>
-          <textarea id="form-comment" rows="3" placeholder="Feedback, what changed, what's next… (Ctrl+Enter saves)"></textarea>
+          <span>Note <span class="muted">(optional, sent with the button you press)</span></span>
+          <textarea id="form-comment" rows="3" placeholder="What changed, what you need, feedback…"></textarea>
         </label>
-        <button id="form-save" class="button primary" type="submit">Save</button>
+        <div id="actions" class="actions"></div>
+        <details class="more">
+          <summary>More options</summary>
+          <div class="more-body">
+            <label class="field">
+              <span>Set any status</span>
+              <select id="form-status"></select>
+            </label>
+            <label class="field">
+              <span>Assigned to</span>
+              <input id="form-assignee" type="text" list="people" autocomplete="off" spellcheck="false"
+                     placeholder="Nobody">
+            </label>
+            <button id="form-save" class="button" type="submit">Save these</button>
+          </div>
+        </details>
       </form>
       <datalist id="people"></datalist>
     </section>
@@ -88,6 +98,55 @@
       <div id="versions"></div>
     </section>
   </aside>
+
+  <dialog id="welcome" class="sheet" aria-labelledby="welcome-title">
+    <form id="welcome-form" method="dialog">
+      <h2 id="welcome-title">Welcome to the Project Browser</h2>
+      <p>This shows where every shot and asset is up to. It mostly keeps itself up to date:
+        when you save a file into the project, your task moves to <b>In progress</b> on its own.</p>
+      <label class="field">
+        <span>What's your name?</span>
+        <input id="welcome-name" type="text" required autocomplete="nickname" spellcheck="false">
+      </label>
+      <p class="muted">It's shown next to notes and changes you make, and used for <b>My Tasks</b> and your
+        <b>Inbox</b>. Use the same name your team assigns you by.</p>
+      <div class="sheet-buttons">
+        <button type="button" id="welcome-guide" class="button">How it works</button>
+        <button type="submit" class="button primary">Start</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="guide" class="sheet" aria-labelledby="guide-title">
+    <h2 id="guide-title">How it works</h2>
+    <h3>The grid</h3>
+    <p>One row per shot or asset, one column per task (layout, 3D, comp…). Each chip is that task's status.
+      Click a chip to see its versions and notes, and to update it.</p>
+    <div id="guide-statuses" class="guide-statuses"></div>
+    <h3>Rings on a chip</h3>
+    <ul>
+      <li><span class="chip flagged demo">Approved !</span> <b>Something's wrong.</b> For example, a new version
+        was saved after approval, or two people saved the same version. Open it to see what to do.</li>
+      <li><span class="chip reminder demo">In progress …</span> <b>Gone quiet.</b> Nothing new for a while.
+        Worth checking in.</li>
+    </ul>
+    <h3>What happens by itself</h3>
+    <ul>
+      <li>Saving the first file for a task moves it to <b>In progress</b>.</li>
+      <li>Saving a new version after a <b>Retake</b> moves it back to <b>In progress</b>.</li>
+      <li>Approving or submitting remembers <b>which version</b> it was, so newer ones get noticed.</li>
+    </ul>
+    <h3>Finding your work</h3>
+    <ul>
+      <li><b>My Tasks</b> shows only what's assigned to you.</li>
+      <li><b>Inbox</b> counts notes and changes on your tasks you haven't seen yet.</li>
+      <li><b>Activity</b> lists everything that happened, newest first.</li>
+      <li>Press <kbd>/</kbd> to search, <kbd>Esc</kbd> to close a panel.</li>
+    </ul>
+    <div class="sheet-buttons">
+      <button type="button" id="guide-close" class="button primary">Got it</button>
+    </div>
+  </dialog>
 
   <dialog id="viewer" class="viewer" aria-label="Preview">
     <div class="viewer-bar">

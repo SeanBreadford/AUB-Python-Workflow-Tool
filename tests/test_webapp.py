@@ -157,6 +157,32 @@ class ApiTests(ServerTestCase):
         codes = [s["code"] for s in data["statuses"]]
         self.assertEqual(codes, ["todo", "ready", "wip", "wfa", "retake", "done"])
 
+    def test_labels_and_one_click_actions(self) -> None:
+        _, data = self.json("GET", "/api/project")
+        labels = {s["code"]: s["label"] for s in data["statuses"]}
+        self.assertEqual(labels["wfa"], "In review")
+        self.assertEqual(data["actions"], {"start": "wip", "review": "wfa", "approve": "done",
+                                           "changes": "retake", "reopen": "wip"})
+
+    def test_reapprove_records_a_new_decision(self) -> None:
+        body = {"entity": "SH05", "task": "layout", "user": "priya", "status": "done"}
+        self.json("POST", "/api/task", body)
+        (self.root / "SH05_layout_v003.ma").write_text("x")
+        with redirect_stdout(io.StringIO()):
+            sort_project(self.root, fast_mode=True)
+        later = time.time() + 60
+        moved = next(self.root.rglob("SH05_layout_v003.ma"))
+        os.utime(moved, (later, later))
+        self.json("POST", "/api/rescan", {})
+
+        status, data = self.json("POST", "/api/task", body)  # same status: nothing to record
+        self.assertEqual(data["saved"], 0)
+        status, data = self.json("POST", "/api/task", {**body, "redecide": True})
+        self.assertEqual((status, data["saved"]), (200, 1))
+        layout = next(t for t in data["entity"]["tasks"] if t["task"] == "layout")
+        self.assertEqual(layout["decided_on"], {"SH05_layout.ma": 3})
+        self.assertEqual(layout["flags"], [])
+
     def test_default_status_colours_meet_wcag_aa(self) -> None:
         for code, (background, text) in status_colors(self.project).items():
             with self.subTest(status=code):

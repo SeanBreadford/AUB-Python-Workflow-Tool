@@ -157,6 +157,7 @@ def _versions_for(index: VersionIndex, project: Project, entity: str) -> list[di
                 "files": len(files),
                 "sequence": version.is_sequence,
                 "path": files[0].relative_to(project.root).as_posix(),
+                "copies": len(version.copies),
                 "media": _media_entry(preview, project),
             })
         products.append({"name": product.name, "task": product.task, "versions": versions})
@@ -200,6 +201,21 @@ def _task_json(project: Project, state, index: VersionIndex) -> dict:
     }
 
 
+def workflow_actions(project: Project) -> dict[str, str | None]:
+    """
+    Which status each one-click action sets, worked out from the config's
+    flags so custom workflows still get sensible buttons.
+    """
+    def first(flag: str) -> str | None:
+        return next((s.code for s in project.statuses if getattr(s, flag)), None)
+
+    plain = [s.code for s in project.statuses
+             if not (s.default or s.done or s.feedback_request or s.retake)]
+    start = project.auto_started or (plain[-1] if plain else None)
+    return {"start": start, "review": first("feedback_request"), "approve": first("done"),
+            "changes": first("retake"), "reopen": start}
+
+
 def project_json(project: Project) -> dict:
     colors = status_colors(project)
     return {
@@ -207,12 +223,13 @@ def project_json(project: Project) -> dict:
         "code": project.code,
         "user": current_user(),
         "statuses": [
-            {"code": s.code, "name": s.name, "default": s.default, "done": s.done,
+            {"code": s.code, "name": s.name, "label": s.label or s.code, "default": s.default, "done": s.done,
              "feedback_request": s.feedback_request, "retake": s.retake,
              "background": colors[s.code][0], "text": colors[s.code][1]}
             for s in project.statuses
         ],
         "task_types": project.task_types,
+        "actions": workflow_actions(project),
     }
 
 
@@ -506,7 +523,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._error(HTTPStatus.BAD_REQUEST, f"'{key}' must be text")
 
         project, index, tracker = self.server.state.get()
-        options = {"status": body.get("status"), "comment": body.get("comment")}
+        options = {"status": body.get("status"), "comment": body.get("comment"),
+                   "redecide": body.get("redecide") is True}
         if "assignee" in body:
             options["assignee"] = body["assignee"]
         events = update_task(tracker, body["entity"], body["task"], body["user"], **options)

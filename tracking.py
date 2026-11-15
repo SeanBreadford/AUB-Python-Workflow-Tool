@@ -428,11 +428,14 @@ def update_task(
     status: str | None = None,
     assignee: object = _UNSET,
     comment: str | None = None,
+    redecide: bool = False,
 ) -> list[dict]:
     """
     Apply a task form like Kitsu's comment panel: a status change carries the
     comment with it; a comment without a status change becomes a note.
-    Only fields that actually change are recorded. Returns the new events.
+    Only fields that actually change are recorded, unless `redecide` asks to
+    record the same status again (re-approve or re-submit the newest version).
+    Returns the new events.
     """
     if not user or not user.strip():
         raise TrackingError("Enter your name first, so changes can be credited.")
@@ -442,7 +445,7 @@ def update_task(
     comment = (comment or "").strip() or None
     events = []
 
-    if status and status.lower() != state.status:
+    if status and (status.lower() != state.status or redecide):
         events.append(record_event(tracker, "status", entity, task, user=user, entity_type=entity_type,
                                    status=status, note=comment))
         comment = None

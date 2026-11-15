@@ -47,7 +47,7 @@ from files being saved.
   and asset, with status automations, shared through the synced folder
 - **Updates itself from files**: statuses move as files arrive, approvals
   are pinned to versions, and problems are flagged (see below)
-- **Activity feed** of every saved version and change, and **New for you**:
+- **Activity feed** of every saved version and change, and an **Inbox** of
   feedback on your tasks you haven't seen yet
 - **Safe by default**: refuses to run on a folder that isn't set up as a project
 - **Shot mapping**: `SHxx` goes to its act, sequence and scene folders
@@ -94,7 +94,7 @@ so edits apply without a restart.
 
 ## Version tracking
 
-`--report` (or **Version Report** in the GUI) lists what exists for every shot
+`--report` (or the **Versions** list in the project browser) shows what exists for every shot
 and asset, without changing anything:
 
 ```text
@@ -205,13 +205,21 @@ python main.py --root ~/TUP --serve
   search by name (press `/`).
 - **Warnings:** a solid ring and `!` marks a problem (clash, changed after
   approval, newer than submitted); a dashed outline and `…` marks a stalled
-  task. **Needs attention** and **Assigned to me** filter the grid.
+  task. **Needs attention** and **My Tasks** filter the grid.
 - **Activity:** the feed of everything that happened, newest first.
-  Feedback on your tasks you haven't seen is highlighted and counted as
-  **new for you**.
-- **Detail panel:** click a shot or a chip to see its tasks; change the
-  status, assignee or add a comment (Ctrl+Enter saves). A comment saved with
-  a status change is attached to it, like a Kitsu review comment.
+  Feedback on your tasks you haven't seen is highlighted and counted in your
+  **Inbox**.
+- **Detail panel:** click a shot or a chip to see its tasks. One-click
+  actions follow the workflow: **Start working**, **Submit for review**,
+  **Approve**, **Request changes** (needs a note), **Reopen**, plus **Post
+  note** and **Assign to me**. A note sent with a button is attached to that
+  change, like a review comment. **More options** sets any status or assignee.
+- **Warnings say what to do**, with a button where there's an obvious fix,
+  such as **Approve newest version** after a change.
+- **Plain words, ShotGrid layout.** Chips show short labels (*In review*,
+  *Retake*, *Approved*), with the full name and code on hover. The views use
+  ShotGrid's terms: **My Tasks**, **Inbox**, **Activity**, **Notes**,
+  **Versions**. The first visit asks your name, and **?** opens a short guide.
 - **Versions:** every version of every file, with previews. Images and
   H.264 video play in the page; image sequences show their middle frame.
   **Show in folder** opens the file's folder. Formats browsers can't show
@@ -224,8 +232,8 @@ python main.py --root ~/TUP --serve
   failing silently, and errors such as a file locked by the sync app are
   shown with what went wrong.
 
-Status colours can be set per status with `color = "#rrggbb"` in the
-project config.
+Status colours and chip labels can be set per status with
+`color = "#rrggbb"` and `label = "..."` in the project config.
 
 **Security.** The page is served on `127.0.0.1` only. The link the app opens
 carries a one-off secret that the page swaps for a cookie other websites

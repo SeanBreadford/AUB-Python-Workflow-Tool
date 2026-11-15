@@ -278,36 +278,43 @@ frame_pattern = '[_.\-](?P<frame>\d{4,6})$'
 #   done              the task is finished and approved
 #   feedback_request  the artist is waiting for review
 #   retake            review asked for changes
+# label is the short text shown on status chips; name is the full name.
 # Optional: color = "#rrggbb" for the project browser. Without it, a colour
 # is picked from the flags. Text colour is chosen automatically for contrast.
 # Changes are stored in _pipeline/events/, one file per person and machine.
 
 [[statuses]]
 code = "todo"
-name = "To do"
+name = "Waiting to start"
+label = "Waiting"
 default = true
 
 [[statuses]]
 code = "ready"
 name = "Ready to start"
+label = "Ready"
 
 [[statuses]]
 code = "wip"
-name = "Work in progress"
+name = "In progress"
+label = "In progress"
 
 [[statuses]]
 code = "wfa"
-name = "Waiting for approval"
+name = "Pending review"
+label = "In review"
 feedback_request = true
 
 [[statuses]]
 code = "retake"
-name = "Retake"
+name = "Retake (changes requested)"
+label = "Retake"
 retake = true
 
 [[statuses]]
 code = "done"
-name = "Done"
+name = "Approved"
+label = "Approved"
 done = true
 
 # The tasks each entity type goes through, in order. These match the `task`

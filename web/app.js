@@ -70,7 +70,7 @@ const me = () => $("user").value.trim();
 
 function statusInfo(code) {
   return state.project.statuses.find((s) => s.code === code)
-    || { code, name: `${code} (not in config)`, background: "#555555", text: "#ffffff" };
+    || { code, label: code, name: `${code} (not in config)`, background: "#555555", text: "#ffffff" };
 }
 
 // Problems cause wrong work (clashes, changes after approval); reminders are just stalled tasks
@@ -85,8 +85,8 @@ function chip(code, extra = {}) {
   const classes = ["chip", info.default ? "quiet" : null, problem ? "flagged" : null, reminder ? "reminder" : null]
     .filter(Boolean).join(" ");
   const mark = problem ? "!" : reminder ? "…" : null;
-  const node = el(tag, { class: classes, title: info.name, ...props },
-    info.code, mark ? el("span", { class: "mark", "aria-hidden": "true", text: mark }) : null);
+  const node = el(tag, { class: classes, title: `${info.name} (${info.code})`, ...props },
+    info.label || info.code, mark ? el("span", { class: "mark", "aria-hidden": "true", text: mark }) : null);
   node.style.setProperty("--chip-bg", info.background);
   node.style.setProperty("--chip-fg", info.text);
   return node;
@@ -198,7 +198,7 @@ function renderSummary() {
   const pct = tasks.length ? Math.round((100 * done) / tasks.length) : 0;
   const parts = [
     el("span", {}, el("b", { text: `${done}/${tasks.length}` }), ` tasks done (${pct}%)`),
-    el("span", {}, el("b", { text: waiting }), " waiting for review"),
+    el("span", {}, el("b", { text: waiting }), " in review"),
     el("span", {}, el("b", { text: retakes }), retakes === 1 ? " retake" : " retakes"),
   ];
   if (attention) {
@@ -215,9 +215,9 @@ function renderSummary() {
   }
   if (unread) {
     parts.push(el("span", { class: "unread" }, el("button", {
-      class: "linkish", type: "button", title: "Changes by others on tasks assigned to you",
+      class: "linkish", type: "button", title: "Notes and changes by others on your tasks that you haven't seen",
       onclick: () => { state.mine = true; setView("activity"); },
-    }, el("b", { text: unread }), " new for you")));
+    }, el("b", { text: unread }), " in your Inbox")));
   }
   if (state.overview.unsorted) {
     parts.push(el("span", {}, el("b", { text: state.overview.unsorted }), " files not sorted yet"));
@@ -305,7 +305,10 @@ function renderGrids() {
   const main = $("main");
   const entities = visibleEntities();
   if (!entities.length) {
-    const why = state.mine && !me() ? "Enter your name in the “You” box to see your tasks." : "Nothing matches. Clear the search or filters.";
+    const why = state.mine && !me()
+      ? "Enter your name in the “You” box to see your tasks."
+      : state.mine ? "Nothing is assigned to you yet. Ask your lead, or use “Assign to me” on a task."
+        : "Nothing matches. Clear the search or filters.";
     setChildren(main, el("p", { class: "empty", text: why }));
     return;
   }
@@ -402,7 +405,7 @@ function renderActivity() {
   });
   if (!items.length) {
     const why = state.mine
-      ? (me() ? "Nothing yet from others on tasks assigned to you." : "Enter your name in the “You” box to see changes on your tasks.")
+      ? (me() ? "Your Inbox is empty: nothing new from others on your tasks." : "Enter your name in the “You” box to see your Inbox.")
       : "No activity yet. Files saved into the project and status changes appear here.";
     setChildren(main, el("p", { class: "empty", text: why }));
     return;
@@ -468,26 +471,150 @@ function renderPanel({ keepForm = false } = {}) {
   }, el("span", { class: "name", text: t.task }), chip(t.status, { flags: t.flags }))));
 
   const task = entity.tasks.find((t) => t.task === state.task);
-  setChildren($("task-alerts"), ...(task ? task.flags : []).map((f) => el("div", { class: isProblem(f) ? "alert" : "alert reminder" },
-    el("b", { text: isProblem(f) ? "⚠ " : "… " }), f.message)));
+  setChildren($("task-alerts"), ...(task ? task.flags : []).map((f) => alertFor(f, task)));
   renderForm(task, keepForm);
   renderVersions(entity, task);
   renderNotes(task);
   if (state.view === "grid") renderGrids();
 }
 
+function taskSummary(task) {
+  const info = statusInfo(task.status);
+  const parts = [el("b", { text: info.name })];
+  if (task.updated) parts.push(` since ${formatIso(task.updated)}`);
+  if (task.updated_by === "files") parts.push(" (a new file moved it)");
+  else if (task.updated_by) parts.push(` by ${task.updated_by}`);
+  parts.push(". ");
+  if (task.latest) parts.push(`Newest version: `, el("b", { text: task.latest }), ". ");
+  parts.push(task.assignee ? el("span", {}, "Assigned to ", el("b", { text: task.assignee }), ".") : "Not assigned to anyone.");
+  return parts;
+}
+
+// One-click actions for where the task is in the workflow
+function actionsFor(task) {
+  const actions = state.project.actions;
+  const info = statusInfo(task.status);
+  const list = [];
+  if (info.feedback_request) {
+    list.push({ key: "approve", text: "Approve", style: "approve", title: "Sign off on the newest version" });
+    list.push({ key: "changes", text: "Request changes", style: "changes", needsNote: true, title: "Send it back with a note" });
+  } else if (info.done) {
+    list.push({ key: "reopen", text: "Reopen", title: "Set it back to in progress" });
+  } else if (task.status === actions.start || info.retake) {
+    list.push({ key: "review", text: "Submit for review", style: "primary", title: "Ask for the newest version to be reviewed" });
+  } else {
+    list.push({ key: "start", text: "Start working", style: "primary", title: "Mark it in progress (saving a file does this too)" });
+  }
+  return list.filter((action) => actions[action.key]);
+}
+
+async function submitTask(body, done) {
+  if (!me()) {
+    toast("Enter your name in the “You” box first.", true);
+    $("user").focus();
+    return false;
+  }
+  for (const button of document.querySelectorAll("#actions button, #task-alerts button, #form-save")) button.disabled = true;
+  try {
+    const result = await api("/api/task", { entity: state.entity.name, task: state.task, user: me(), ...body });
+    state.formDirty = false;
+    toast(result.saved ? done : "Nothing changed");
+    await loadAll();
+    return true;
+  } catch (error) {
+    toast(error.message, true);
+    return false;
+  } finally {
+    for (const button of document.querySelectorAll("#actions button, #task-alerts button, #form-save")) button.disabled = false;
+  }
+}
+
+function runAction(action, { redecide = false } = {}) {
+  const note = $("form-comment").value.trim();
+  if (action.needsNote && !note) {
+    toast("Add a note saying what needs to change, then press it again.", true);
+    $("form-comment").focus();
+    return;
+  }
+  const status = state.project.actions[action.key];
+  submitTask({ status, comment: note, redecide }, `${state.entity.name} ${state.task}: ${statusInfo(status).label}`);
+}
+
 function renderForm(task, keepForm) {
   const form = $("task-form");
   form.hidden = !task;
   if (!task) return;
-  const select = $("form-status");
+  setChildren($("task-summary"), ...taskSummary(task));
+
+  const buttons = actionsFor(task).map((action) => el("button", {
+    class: `button ${action.style || ""}`, type: "button", title: action.title, text: action.text,
+    onclick: () => runAction(action),
+  }));
+  buttons.push(el("button", {
+    class: "button", type: "button", text: "Post note", title: "Add the note without changing the status",
+    onclick: () => {
+      const note = $("form-comment").value.trim();
+      if (!note) { toast("Write a note first.", true); $("form-comment").focus(); return; }
+      submitTask({ comment: note }, "Note posted");
+    },
+  }));
+  if ((task.assignee || "").toLowerCase() !== me().toLowerCase()) {
+    buttons.push(el("button", {
+      class: "button", type: "button", text: "Assign to me",
+      onclick: () => submitTask({ assignee: me() }, `Assigned ${state.entity.name} ${state.task} to you`),
+    }));
+  }
+  setChildren($("actions"), ...buttons);
+
   if (!keepForm) {
-    setChildren(select, ...state.project.statuses.map((s) => el("option", { value: s.code, text: `${s.code} — ${s.name}` })));
+    const select = $("form-status");
+    setChildren(select, ...state.project.statuses.map((s) => el("option", { value: s.code, text: `${s.name} (${s.code})` })));
     select.value = task.status;
     $("form-assignee").value = task.assignee || "";
     $("form-comment").value = "";
     state.formDirty = false;
   }
+}
+
+// What each warning means and what to do about it, in plain words
+function alertFor(flag, task) {
+  const actions = state.project.actions;
+  const node = el("div", { class: isProblem(flag) ? "alert" : "alert reminder" },
+    el("b", { text: isProblem(flag) ? "⚠ " : "… " }), flag.message);
+  const help = {
+    conflict: "Two people probably saved the same version number, so the sorter kept both and renamed one. "
+      + "Compare them, keep the right one, and save the other as the next version.",
+    changed_after_approval: "A new version was saved after this was approved, so the approval doesn't cover it. "
+      + "Check the newest version, then approve it or request changes.",
+    newer_than_submitted: "A newer version was saved after this was sent for review. "
+      + "Make sure the newest one is what gets reviewed.",
+    stalled: statusInfo(task.status).retake
+      ? `No new version since the retake. ${task.assignee ? `Check in with ${task.assignee}.` : "Assign someone to it."}`
+      : `Nothing new for a while. ${task.assignee ? `Check in with ${task.assignee}.` : "Is anyone working on it?"}`,
+  }[flag.code];
+  if (help) node.append(el("span", { class: "what-to-do", text: help }));
+
+  const buttons = [];
+  if (flag.code === "changed_after_approval") {
+    buttons.push(el("button", { class: "button", type: "button", text: "Approve newest version",
+      onclick: () => runAction({ key: "approve" }, { redecide: true }) }));
+    if (actions.changes) {
+      buttons.push(el("button", { class: "button", type: "button", text: "Request changes",
+        onclick: () => runAction({ key: "changes", needsNote: true }) }));
+    }
+  } else if (flag.code === "newer_than_submitted") {
+    buttons.push(el("button", { class: "button", type: "button", text: "Submit newest for review",
+      onclick: () => runAction({ key: "review" }, { redecide: true }) }));
+  } else if (flag.code === "conflict") {
+    const product = state.entity.products.find((p) => p.task === task.task && p.versions.some((v) => v.copies));
+    const version = product && product.versions.find((v) => v.copies);
+    if (version) {
+      buttons.push(el("button", { class: "button", type: "button", text: "Show both files",
+        onclick: () => reveal(version.path) }));
+    }
+  }
+  if (buttons.length) node.append(el("div", { class: "alert-actions" }, ...buttons));
+  return node;
 }
 
 function decisionWord(task) {
@@ -550,30 +677,11 @@ function fillPeople() {
 // Actions
 async function saveTask(event) {
   event.preventDefault();
-  if (!me()) {
-    toast("Enter your name in the “You” box first.", true);
-    $("user").focus();
-    return;
-  }
-  const button = $("form-save");
-  button.disabled = true;
-  try {
-    const result = await api("/api/task", {
-      entity: state.entity.name,
-      task: state.task,
-      user: me(),
-      status: $("form-status").value,
-      assignee: $("form-assignee").value,
-      comment: $("form-comment").value,
-    });
-    state.formDirty = false;
-    toast(result.saved ? `Saved ${state.entity.name} ${state.task}` : "Nothing changed");
-    await loadAll();
-  } catch (error) {
-    toast(error.message, true);
-  } finally {
-    button.disabled = false;
-  }
+  submitTask({
+    status: $("form-status").value,
+    assignee: $("form-assignee").value,
+    comment: $("form-comment").value,
+  }, `Saved ${state.entity.name} ${state.task}`);
 }
 
 async function reveal(path) {
@@ -619,7 +727,10 @@ $("panel-close").addEventListener("click", closePanel);
 $("task-form").addEventListener("submit", saveTask);
 $("task-form").addEventListener("input", () => { state.formDirty = true; });
 $("form-comment").addEventListener("keydown", (event) => {
-  if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) $("task-form").requestSubmit();
+  // Ctrl+Enter posts the note (the safe choice: it never changes the status)
+  if (event.key === "Enter" && (event.ctrlKey || event.metaKey) && $("form-comment").value.trim()) {
+    submitTask({ comment: $("form-comment").value.trim() }, "Note posted");
+  }
 });
 $("viewer-close").addEventListener("click", () => $("viewer").close());
 $("viewer").addEventListener("close", () => setChildren($("viewer-body")));
@@ -631,9 +742,37 @@ document.addEventListener("keydown", (event) => {
   }
 });
 
+// Welcome & guide
+function openGuide() {
+  if (state.project) {
+    setChildren($("guide-statuses"), ...state.project.statuses.map((s) =>
+      el("span", { class: "item" }, chip(s.code), s.name !== s.label ? s.name : null)));
+  }
+  $("guide").showModal();
+}
+
+function welcomeIfNew() {
+  if (localStorage.getItem("pb-user")) return;
+  $("welcome-name").value = $("user").value;
+  $("welcome").showModal();
+  $("welcome-name").select();
+}
+
+$("help").addEventListener("click", openGuide);
+$("guide-close").addEventListener("click", () => $("guide").close());
+$("welcome-guide").addEventListener("click", openGuide);
+$("welcome-form").addEventListener("submit", () => {
+  const name = $("welcome-name").value.trim();
+  if (!name) return;
+  $("user").value = name;
+  localStorage.setItem("pb-user", name);
+  renderAll();
+});
+
 // Start
 (async () => {
   await loadAll();
+  if (state.project) welcomeIfNew();
   if (location.hash === "#activity") {
     setView("activity");
   } else {

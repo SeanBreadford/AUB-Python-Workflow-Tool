@@ -12,9 +12,7 @@ from tkinter import filedialog, messagebox, ttk
 from config import DEFAULT_BATCH_SIZE, ROOT
 from filesystem import set_operation_callback, sort_project, sort_project_batch
 from project import ProjectConfigError, ProjectNotFoundError, init_project, load_project
-from tracking import build_tracker
 from theme import COLORS, apply_ttk_style
-from versions import format_report, scan_versions
 from webapp import BrowserServer
 
 try:
@@ -69,12 +67,14 @@ class FileSorterGUI:
         self.root_var = tk.StringVar(value=str(ROOT))
         self.dry_run_var = tk.BooleanVar(value=False)
         self.fast_mode_var = tk.BooleanVar(value=False)
-        self.batch_var = tk.BooleanVar(value=True)
+        self.batch_var = tk.BooleanVar(value=False)
         self.batch_size_var = tk.IntVar(value=DEFAULT_BATCH_SIZE)
         self.status_var = tk.StringVar(value="Ready")
 
         self._build_ui()
         self._poll_log_queue()
+        self.log_queue.put("Tip: tick “Preview only” and press “Sort files now” to see where files "
+                           "would go, without moving anything.")
 
         # Route sorter output and stats to the GUI for the app's lifetime,
         # so watch mode is visible too (and works when stdout is None in the exe)
@@ -111,18 +111,36 @@ class FileSorterGUI:
         container = tk.Frame(outer, bg=COLORS["bg"])
         container.pack(fill="both", expand=True)
 
-        # Root picker
+        tk.Label(
+            container,
+            text="Sorts files dropped into the project into the right folders. "
+            "Use the Project Browser to see and update where every shot is up to.",
+            bg=COLORS["bg"],
+            fg=COLORS["muted"],
+            font=("Segoe UI", 10),
+            anchor="w",
+            justify="left",
+        ).pack(fill="x", pady=(0, 10))
+
+        # Project folder
         root_panel = tk.Frame(container, bg=COLORS["panel"])
         root_panel.pack(fill="x", pady=(0, 10))
         root_panel.configure(highlightbackground="#2d2d2d", highlightthickness=1)
 
         tk.Label(
             root_panel,
-            text="Project Root",
+            text="Project folder",
             bg=COLORS["panel"],
             fg=COLORS["text"],
             font=("Segoe UI", 10, "bold"),
-        ).pack(anchor="w", padx=10, pady=(10, 4))
+        ).pack(anchor="w", padx=10, pady=(10, 0))
+        tk.Label(
+            root_panel,
+            text="The folder your team shares. The first time, you'll be asked to set it up.",
+            bg=COLORS["panel"],
+            fg=COLORS["muted"],
+            font=("Segoe UI", 9),
+        ).pack(anchor="w", padx=10, pady=(0, 4))
 
         row = tk.Frame(root_panel, bg=COLORS["panel"])
         row.pack(fill="x", padx=10, pady=(0, 10))
@@ -141,9 +159,9 @@ class FileSorterGUI:
 
         browse = tk.Button(
             row,
-            text="Browse",
+            text="Choose…",
             command=self._browse_root,
-            bg=COLORS["accent"],
+            bg="#444",
             fg="white",
             relief="flat",
             padx=14,
@@ -152,18 +170,18 @@ class FileSorterGUI:
         )
         browse.pack(side="left", padx=(8, 0))
 
-        # Options
+        # Options, each with a plain explanation
         options = tk.Frame(container, bg=COLORS["panel"])
         options.pack(fill="x", pady=(0, 10))
         options.configure(highlightbackground="#2d2d2d", highlightthickness=1)
 
         tk.Label(
             options,
-            text="Options",
+            text="Sorting options",
             bg=COLORS["panel"],
             fg=COLORS["text"],
             font=("Segoe UI", 10, "bold"),
-        ).grid(row=0, column=0, sticky="w", padx=10, pady=(10, 6))
+        ).grid(row=0, column=0, columnspan=3, sticky="w", padx=10, pady=(10, 4))
 
         check_style = {
             "bg": COLORS["panel"],
@@ -172,108 +190,63 @@ class FileSorterGUI:
             "activebackground": COLORS["panel"],
             "activeforeground": COLORS["text"],
             "font": ("Segoe UI", 10),
+            "anchor": "w",
         }
+        hint_style = {"bg": COLORS["panel"], "fg": COLORS["muted"], "font": ("Segoe UI", 9), "anchor": "w"}
 
-        tk.Checkbutton(options, text="Dry Run", variable=self.dry_run_var, **check_style).grid(
-            row=1, column=0, sticky="w", padx=10, pady=2
+        option_rows = (
+            (self.dry_run_var, "Preview only",
+             "Lists where each file would go, without moving anything. Good for a first try."),
+            (self.fast_mode_var, "Skip the sync check",
+             "Normally files must stop changing for a moment first, so half-uploaded files aren't moved."),
         )
-        tk.Checkbutton(options, text="Fast Mode", variable=self.fast_mode_var, **check_style).grid(
-            row=1, column=1, sticky="w", padx=10, pady=2
-        )
-        tk.Checkbutton(options, text="Batch Mode", variable=self.batch_var, **check_style).grid(
-            row=1, column=2, sticky="w", padx=10, pady=2
-        )
+        for index, (variable, text, hint) in enumerate(option_rows, start=1):
+            tk.Checkbutton(options, text=text, variable=variable, **check_style).grid(
+                row=index, column=0, sticky="w", padx=10, pady=2
+            )
+            tk.Label(options, text=hint, **hint_style).grid(row=index, column=1, columnspan=2, sticky="w", padx=(4, 10))
 
-        tk.Label(
-            options,
-            text="Batch Size",
-            bg=COLORS["panel"],
-            fg=COLORS["muted"],
-            font=("Segoe UI", 9),
-        ).grid(row=2, column=0, sticky="w", padx=10, pady=(6, 10))
-
+        batch_row = tk.Frame(options, bg=COLORS["panel"])
+        batch_row.grid(row=3, column=0, columnspan=3, sticky="w", padx=10, pady=(2, 10))
+        tk.Checkbutton(batch_row, text="Work in batches of", variable=self.batch_var, **check_style).pack(side="left")
         tk.Spinbox(
-            options,
+            batch_row,
             from_=1,
             to=500,
             textvariable=self.batch_size_var,
-            width=8,
+            width=5,
             bg=COLORS["input"],
             fg=COLORS["text"],
             relief="flat",
-            bd=5,
+            bd=4,
             buttonbackground=COLORS["panel"],
             highlightthickness=0,
-        ).grid(row=2, column=1, sticky="w", pady=(6, 10))
+        ).pack(side="left", padx=(2, 6))
+        tk.Label(batch_row, text="files (only for very large folders)", **hint_style).pack(side="left")
 
-        # Buttons
+        # Buttons: the browser first, it's where most people spend their time
         actions = tk.Frame(container, bg=COLORS["bg"])
         actions.pack(fill="x", pady=(0, 10))
 
-        self.sort_btn = tk.Button(
-            actions,
-            text="Sort Now",
-            command=self.start_sort,
-            bg=COLORS["accent"],
-            fg="white",
-            relief="flat",
-            padx=14,
-            pady=10,
-            cursor="hand2",
-        )
-        self.sort_btn.pack(side="left")
+        def action_button(text: str, command, primary: bool = False) -> tk.Button:
+            button = tk.Button(
+                actions,
+                text=text,
+                command=command,
+                bg=COLORS["accent"] if primary else "#444",
+                fg="white",
+                relief="flat",
+                padx=14,
+                pady=10,
+                cursor="hand2",
+            )
+            button.pack(side="left", padx=(0, 8))
+            return button
 
-        self.watch_btn = tk.Button(
-            actions,
-            text="Start Watch",
-            command=self.toggle_watch,
-            bg="#444",
-            fg="white",
-            relief="flat",
-            padx=14,
-            pady=10,
-            cursor="hand2",
-        )
-        self.watch_btn.pack(side="left", padx=(8, 0))
-
-        report_btn = tk.Button(
-            actions,
-            text="Version Report",
-            command=self.start_report,
-            bg="#444",
-            fg="white",
-            relief="flat",
-            padx=14,
-            pady=10,
-            cursor="hand2",
-        )
-        report_btn.pack(side="left", padx=(8, 0))
-
-        browser_btn = tk.Button(
-            actions,
-            text="Project Browser",
-            command=self.open_browser,
-            bg="#444",
-            fg="white",
-            relief="flat",
-            padx=14,
-            pady=10,
-            cursor="hand2",
-        )
-        browser_btn.pack(side="left", padx=(8, 0))
-
-        clear_btn = tk.Button(
-            actions,
-            text="Clear Log",
-            command=self.clear_log,
-            bg="#333",
-            fg="white",
-            relief="flat",
-            padx=14,
-            pady=10,
-            cursor="hand2",
-        )
-        clear_btn.pack(side="left", padx=(8, 0))
+        action_button("Open Project Browser", self.open_browser, primary=True)
+        self.sort_btn = action_button("Sort files now", self.start_sort)
+        self.watch_btn = action_button("Auto-sort new files", self.toggle_watch)
+        action_button("Clear log", self.clear_log).configure(bg="#333")
 
         self.progress = ttk.Progressbar(actions, mode="determinate", value=0)
         self.progress.pack(side="right", fill="x", expand=True, padx=(20, 0))
@@ -520,31 +493,6 @@ class FileSorterGUI:
         self.sort_btn.configure(state="normal")
         self.status_var.set(status)
 
-    # Report Actions
-    def start_report(self) -> None:
-        root = Path(self.root_var.get()).expanduser().resolve()
-        if not root.exists():
-            messagebox.showerror("Invalid root", f"Folder does not exist:\n{root}")
-            return
-        if not self._ensure_project(root):
-            return
-        self.status_var.set("Scanning versions...")
-        threading.Thread(target=self._report_worker, args=(root,), daemon=True).start()
-
-    def _report_worker(self, root: Path) -> None:
-        try:
-            project = load_project(root)
-            index = scan_versions(project, root)
-            tracker = build_tracker(project, index) if project.statuses else None
-            report = format_report(index, tracker)
-            for line in report.splitlines():
-                self.log_queue.put(line or " ")
-            status = "Version report complete."
-        except Exception as error:
-            self.log_queue.put(f"ERROR: {error}")
-            status = "Version report failed."
-        self.call_soon(self.status_var.set, status)
-
     # Watch Actions
     def toggle_watch(self) -> None:
         if self.watching:
@@ -582,8 +530,8 @@ class FileSorterGUI:
         self.observer.start()
 
         self.watching = True
-        self.watch_btn.configure(text="Stop Watch", bg=COLORS["warning"])
-        self.status_var.set("Watch mode active.")
+        self.watch_btn.configure(text="Stop auto-sorting", bg=COLORS["warning"])
+        self.status_var.set("Auto-sorting: new files are sorted as they arrive.")
 
     def stop_watch(self) -> None:
         if not self.watching:
@@ -599,8 +547,8 @@ class FileSorterGUI:
             self.handler = None
             self.observer = None
             self.watching = False
-            self.watch_btn.configure(text="Start Watch", bg="#444")
-            self.status_var.set("Watch mode stopped.")
+            self.watch_btn.configure(text="Auto-sort new files", bg="#444")
+            self.status_var.set("Auto-sorting stopped.")
 
     # Shutdown
     def shutdown(self) -> None:

@@ -72,6 +72,8 @@ class Status:
     retake: bool = False
     # "#rrggbb"; None picks a default from the flags (see status_color)
     color: str | None = None
+    # Short plain-words label for chips ("In review"); None shows the code
+    label: str | None = None
 
 
 @dataclass(frozen=True)
@@ -407,6 +409,7 @@ def _parse_statuses(raw_statuses: list) -> tuple[Status, ...]:
                 feedback_request=table.get("feedback_request", bool, False),
                 retake=table.get("retake", bool, False),
                 color=_parse_color(table.get("color", str, None), table.where),
+                label=table.get("label", str, None),
             )
         )
         table.done()
