@@ -271,6 +271,83 @@ pattern = '[_.\-]v(?P<version>\d+)(?=[_.\-]|$)'
 frame_pattern = '[_.\-](?P<frame>\d{4,6})$'
 
 
+# Production tracking (python main.py --status), modelled on Kitsu.
+#
+# Statuses are listed in workflow order. Flags:
+#   default           the status every task starts at (exactly one)
+#   done              the task is finished and approved
+#   feedback_request  the artist is waiting for review
+#   retake            review asked for changes
+# Changes are stored in _pipeline/events/, one file per person and machine.
+
+[[statuses]]
+code = "todo"
+name = "To do"
+default = true
+
+[[statuses]]
+code = "ready"
+name = "Ready to start"
+
+[[statuses]]
+code = "wip"
+name = "Work in progress"
+
+[[statuses]]
+code = "wfa"
+name = "Waiting for approval"
+feedback_request = true
+
+[[statuses]]
+code = "retake"
+name = "Retake"
+retake = true
+
+[[statuses]]
+code = "done"
+name = "Done"
+done = true
+
+# The tasks each entity type goes through, in order. These match the `task`
+# names in the rules, so versions and statuses line up.
+[task_types]
+shot = ["layout", "3d", "2d", "fx", "comp", "renders"]
+char = ["model", "textures"]
+prop = ["model", "textures"]
+env = ["model", "textures"]
+
+# When a task reaches a status, move another task of the same shot or asset.
+# Only tasks still at the default status are moved, so an automation never
+# overwrites work in progress. These are examples; change them to fit.
+[[automations]]
+entity_type = "shot"
+task = "layout"
+status = "done"
+then_task = "3d"
+then_status = "ready"
+
+[[automations]]
+entity_type = "shot"
+task = "layout"
+status = "done"
+then_task = "2d"
+then_status = "ready"
+
+[[automations]]
+entity_type = "shot"
+task = "renders"
+status = "done"
+then_task = "comp"
+then_status = "ready"
+
+[[automations]]
+entity_type = "prop"
+task = "model"
+status = "done"
+then_task = "textures"
+then_status = "ready"
+
+
 # Files that match no rule.
 [fallback]
 dest = "incoming"

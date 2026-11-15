@@ -6,6 +6,7 @@ from pathlib import Path
 from config import DEFAULT_BATCH_SIZE, ROOT
 from filesystem import sort_project, sort_project_batch
 from project import ProjectConfigError, ProjectNotFoundError, init_project, load_project
+from tracking import TrackingError, build_tracker, format_entity, format_status_grid, record_event
 from versions import format_report, scan_versions
 
 try:
@@ -68,6 +69,47 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="List the latest version of everything per shot and asset (changes nothing)",
     )
+    tracking = parser.add_argument_group("production tracking")
+    tracking.add_argument(
+        "--status",
+        action="store_true",
+        help="Show the task status grid for every shot and asset",
+    )
+    tracking.add_argument(
+        "--show",
+        metavar="ENTITY",
+        help="Show one shot or asset: task statuses, versions and notes",
+    )
+    tracking.add_argument(
+        "--set-status",
+        nargs=3,
+        metavar=("ENTITY", "TASK", "STATUS"),
+        help="Set a task's status, e.g. --set-status SH05 layout wip",
+    )
+    tracking.add_argument(
+        "--comment",
+        help="Note to attach to --set-status",
+    )
+    tracking.add_argument(
+        "--add-note",
+        nargs=3,
+        metavar=("ENTITY", "TASK", "TEXT"),
+        help="Add a note to a task",
+    )
+    tracking.add_argument(
+        "--assign",
+        nargs=3,
+        metavar=("ENTITY", "TASK", "USER"),
+        help="Assign a task to someone ('-' to unassign)",
+    )
+    tracking.add_argument(
+        "--entity-type",
+        help="Type of a shot or asset that has no files yet, e.g. prop",
+    )
+    tracking.add_argument(
+        "--user",
+        help="Name to record changes under (default: FILE_SORTER_USER or your login)",
+    )
     parser.add_argument(
         "--fast-mode",
         action="store_true",
@@ -75,6 +117,36 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     return parser
+
+
+# Tracking Commands
+def run_tracking(args: argparse.Namespace, project) -> None:
+    # Scan the whole project so every shot and asset with files is known
+    index = scan_versions(project)
+    tracker = build_tracker(project, index)
+    common = {"user": args.user, "entity_type": args.entity_type}
+
+    if args.set_status:
+        entity, task, status = args.set_status
+        event = record_event(tracker, "status", entity, task, status=status, note=args.comment, **common)
+        print(f"{event['entity']} {task}: {event['status']}")
+    if args.add_note:
+        entity, task, text = args.add_note
+        event = record_event(tracker, "note", entity, task, text=text, **common)
+        print(f"{event['entity']} {task}: note added")
+    if args.assign:
+        entity, task, assignee = args.assign
+        assignee = None if assignee == "-" else assignee
+        event = record_event(tracker, "assign", entity, task, assignee=assignee, **common)
+        print(f"{event['entity']} {task}: " + (f"assigned to {assignee}" if assignee else "unassigned"))
+
+    if args.status or args.show:
+        if args.set_status or args.add_note or args.assign:
+            tracker = build_tracker(project, index)  # include the change just made
+        if args.status:
+            print(format_status_grid(tracker))
+        if args.show:
+            print(format_entity(tracker, index, args.show))
 
 
 # CLI Entry
@@ -105,7 +177,16 @@ def main() -> None:
         raise SystemExit(f"Error: {error}")
 
     if args.report:
-        print(format_report(scan_versions(project, root)))
+        index = scan_versions(project, root)
+        tracker = build_tracker(project, index) if project.statuses else None
+        print(format_report(index, tracker))
+        return
+
+    if any((args.status, args.show, args.set_status, args.add_note, args.assign)):
+        try:
+            run_tracking(args, project)
+        except TrackingError as error:
+            raise SystemExit(f"Error: {error}")
         return
 
     if not args.quiet:

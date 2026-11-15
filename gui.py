@@ -11,6 +11,7 @@ from tkinter import filedialog, messagebox, ttk
 from config import DEFAULT_BATCH_SIZE, ROOT
 from filesystem import set_operation_callback, sort_project, sort_project_batch
 from project import ProjectConfigError, ProjectNotFoundError, init_project, load_project
+from tracking import build_tracker
 from versions import format_report, scan_versions
 
 try:
@@ -489,7 +490,10 @@ class FileSorterGUI:
 
     def _report_worker(self, root: Path) -> None:
         try:
-            report = format_report(scan_versions(load_project(root), root))
+            project = load_project(root)
+            index = scan_versions(project, root)
+            tracker = build_tracker(project, index) if project.statuses else None
+            report = format_report(index, tracker)
             for line in report.splitlines():
                 self.log_queue.put(line or " ")
             status = "Version report complete."

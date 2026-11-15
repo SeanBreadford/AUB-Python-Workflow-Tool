@@ -4,10 +4,14 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path, PurePosixPath
+from typing import TYPE_CHECKING
 
 from filesystem import is_already_sorted, is_ignored_file, iter_files
 from project import Project
 from rules import match_rule
+
+if TYPE_CHECKING:
+    from tracking import Tracker
 
 # Version tracking works like ShotGrid publishes: a file's "name" is its
 # filename with the version removed (SH05_layout_v003.ma -> SH05_layout.ma),
@@ -120,7 +124,7 @@ class VersionIndex:
         return next((e for e in self.entities if e.name.lower() == name), None)
 
 
-def _natural_key(text: str) -> list:
+def natural_key(text: str) -> list:
     return [int(part) if part.isdigit() else part.lower() for part in re.split(r"(\d+)", text)]
 
 
@@ -163,13 +167,14 @@ def scan_versions(project: Project, root: Path | None = None) -> VersionIndex:
 
     ordered = sorted(
         entities.values(),
-        key=lambda e: (type_order.get(e.entity_type, len(type_order)), _natural_key(e.name)),
+        key=lambda e: (type_order.get(e.entity_type, len(type_order)), natural_key(e.name)),
     )
     return VersionIndex(project, ordered, sorted(unsorted))
 
 
 # Report
-def format_report(index: VersionIndex) -> str:
+def format_report(index: VersionIndex, tracker: Tracker | None = None) -> str:
+    """The version report; with a tracker, each row also shows its task's status."""
     lines = [f"Project: {index.project.name}"]
     if not index.entities:
         lines.append("No tracked files found.")
@@ -177,6 +182,7 @@ def format_report(index: VersionIndex) -> str:
     all_products = [p for e in index.entities for p in e.products.values()]
     task_width = max((len(p.task or "-") for p in all_products), default=1)
     name_width = max((len(p.name) for p in all_products), default=1)
+    status_width = max((len(s.code) for s in tracker.project.statuses), default=1) if tracker else 0
 
     current_type: object = object()
     for entity in index.entities:
@@ -194,9 +200,13 @@ def format_report(index: VersionIndex) -> str:
             if latest.is_sequence:
                 notes.append(f"{len(latest.files)} frames")
             when = datetime.fromtimestamp(latest.modified).strftime("%Y-%m-%d %H:%M")
+            status = ""
+            if tracker is not None:
+                code = tracker.task(entity.name, product.task).status if product.task else "-"
+                status = f"  {code:<{status_width}}"
             lines.append(
                 f"  {product.task or '-':<{task_width}}  {product.name:<{name_width}}  "
-                f"{latest.label:>4}  {when}" + (f"  {', '.join(notes)}" if notes else "")
+                f"{latest.label:>4}{status}  {when}" + (f"  {', '.join(notes)}" if notes else "")
             )
 
     if index.unsorted:

@@ -61,6 +61,28 @@ class Rule:
         return fields
 
 
+# Tracking Model
+@dataclass(frozen=True)
+class Status:
+    code: str
+    name: str
+    default: bool = False
+    done: bool = False
+    feedback_request: bool = False
+    retake: bool = False
+
+
+@dataclass(frozen=True)
+class Automation:
+    """When `task` reaches `status`, move `then_task` to `then_status`."""
+
+    entity_type: str | None
+    task: str
+    status: str
+    then_task: str
+    then_status: str
+
+
 # Project Model
 @dataclass(frozen=True)
 class Project:
@@ -80,6 +102,17 @@ class Project:
     fallback_from: frozenset[Path]
     version_pattern: re.Pattern[str]
     frame_pattern: re.Pattern[str] | None
+    statuses: tuple[Status, ...] = ()
+    task_types: dict[str, tuple[str, ...]] | None = None
+    automations: tuple[Automation, ...] = ()
+
+    @property
+    def default_status(self) -> Status | None:
+        return next((s for s in self.statuses if s.default), None)
+
+    def status(self, code: str) -> Status | None:
+        code = code.lower()
+        return next((s for s in self.statuses if s.code == code), None)
 
     def base_fields(self) -> dict[str, str]:
         production = self.production_root.relative_to(self.root).as_posix()
@@ -339,6 +372,81 @@ def _parse_rules(raw_rules: list, file_groups: dict[str, frozenset[str]]) -> tup
     return tuple(rules)
 
 
+def _parse_statuses(raw_statuses: list) -> tuple[Status, ...]:
+    statuses: list[Status] = []
+    for index, raw in enumerate(raw_statuses):
+        table = _Table(raw, f"statuses[{index}]")
+        code = table.get("code", str).lower()
+        table.where = f"statuses[{index}] ({code})"
+        if not re.fullmatch(r"[a-z0-9_\-]+", code):
+            raise ProjectConfigError(f"{table.where}: code may only use letters, digits, _ and -")
+        if any(s.code == code for s in statuses):
+            raise ProjectConfigError(f"{table.where}: duplicate status code")
+        statuses.append(
+            Status(
+                code=code,
+                name=table.get("name", str, code),
+                default=table.get("default", bool, False),
+                done=table.get("done", bool, False),
+                feedback_request=table.get("feedback_request", bool, False),
+                retake=table.get("retake", bool, False),
+            )
+        )
+        table.done()
+
+    defaults = [s.code for s in statuses if s.default]
+    if statuses and len(defaults) != 1:
+        found = ", ".join(defaults) or "none"
+        raise ProjectConfigError(f"statuses: exactly one needs default = true (found: {found})")
+    return tuple(statuses)
+
+
+def _parse_task_types(table: _Table) -> dict[str, tuple[str, ...]]:
+    task_types = {}
+    for entity_type in list(table.data):
+        tasks = table.str_list(entity_type)
+        if len(set(tasks)) != len(tasks):
+            raise ProjectConfigError(f"task_types.{entity_type}: duplicate task")
+        task_types[entity_type] = tuple(tasks)
+    table.done()
+    return task_types
+
+
+def _parse_automations(
+    raw_automations: list, statuses: tuple[Status, ...], task_types: dict[str, tuple[str, ...]]
+) -> tuple[Automation, ...]:
+    codes = {s.code for s in statuses}
+    automations = []
+    for index, raw in enumerate(raw_automations):
+        table = _Table(raw, f"automations[{index}]")
+        automation = Automation(
+            entity_type=table.get("entity_type", str, None),
+            task=table.get("task", str),
+            status=table.get("status", str).lower(),
+            then_task=table.get("then_task", str),
+            then_status=table.get("then_status", str).lower(),
+        )
+        table.done()
+
+        for key in ("status", "then_status"):
+            if getattr(automation, key) not in codes:
+                raise ProjectConfigError(f"{table.where}.{key}: unknown status '{getattr(automation, key)}'")
+        if automation.entity_type is not None:
+            known = task_types.get(automation.entity_type)
+            if known is None:
+                raise ProjectConfigError(
+                    f"{table.where}.entity_type: no task_types for '{automation.entity_type}'"
+                )
+            for key in ("task", "then_task"):
+                if getattr(automation, key) not in known:
+                    raise ProjectConfigError(
+                        f"{table.where}.{key}: '{getattr(automation, key)}' is not a "
+                        f"{automation.entity_type} task"
+                    )
+        automations.append(automation)
+    return tuple(automations)
+
+
 def _parse_project(root: Path, config_path: Path, data: dict) -> Project:
     top = _Table(data, config_path.name)
 
@@ -391,6 +499,10 @@ def _parse_project(root: Path, config_path: Path, data: dict) -> Project:
         raise ProjectConfigError("versions.frame_pattern: needs a (?P<frame>...) group")
     versions.done()
 
+    statuses = _parse_statuses(top.get("statuses", list, []))
+    task_types = _parse_task_types(_Table(top.get("task_types", dict, {}), "task_types"))
+    automations = _parse_automations(top.get("automations", list, []), statuses, task_types)
+
     top.done()
 
     return Project(
@@ -410,4 +522,7 @@ def _parse_project(root: Path, config_path: Path, data: dict) -> Project:
         fallback_from=frozenset((root / folder).resolve() for folder in fallback_from),
         version_pattern=version_pattern,
         frame_pattern=frame_pattern,
+        statuses=statuses,
+        task_types=task_types,
+        automations=automations,
     )

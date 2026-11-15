@@ -19,6 +19,8 @@ carried the tidy tree back to everyone.
   shot list live in one TOML file, so new projects need no code changes
 - **Version tracking**: lists the latest version of every shot and asset
   file, read straight from the sorted files
+- **Production tracking**: task statuses, notes and assignments per shot
+  and asset, with status automations, shared through the synced folder
 - **Safe by default**: refuses to run on a folder that isn't set up as a project
 - **Shot mapping**: `SHxx` goes to its act, sequence and scene folders
 - **Cloud-safe**: waits until a file has stopped changing before moving it,
@@ -92,6 +94,46 @@ sync between machines. Which rules are tracked is set in the config with
 in its `[versions]` section. Files that belong somewhere but haven't been
 sorted yet are counted at the end of the report.
 
+## Production tracking
+
+Each shot and asset has tasks (layout, 3d, comp, ... for shots; model and
+textures for assets), and each task has a status, an assignee and notes. The
+statuses, task types and automations are set in the project config, using
+Kitsu's model:
+
+```text
+$ python main.py --root ~/TUP --set-status SH05 layout wfa --comment "Camera locked"
+$ python main.py --root ~/TUP --assign SH05 3d alex
+$ python main.py --root ~/TUP --status
+== shot (54) ==
+      layout   3d       2d       fx       comp     renders
+SH05  done     ready    ready    todo     todo     todo
+SH06  retake   todo     todo     todo     todo     todo
+...
+Retakes:
+  SH06 layout  since 2026-11-15 15:13
+```
+
+`--show SH05` lists one shot's tasks with their versions and notes, and
+`--add-note SH05 layout "..."` adds a note. Shots come from the shot ranges
+and assets from sorted files; to track an asset that has no files yet, add
+`--entity-type prop`. Changes are recorded under your login, or under
+`--user` / `FILE_SORTER_USER`. With tracking set up, `--report` also shows
+each task's status.
+
+The default statuses are `todo`, `ready`, `wip`, `wfa` (waiting for approval),
+`retake` and `done`. Automations move the next task along: when a shot's
+layout is `done`, its `3d` and `2d` tasks become `ready`, but only if they
+haven't started yet.
+
+**How it syncs without a server.** Every change is appended to
+`_pipeline/events/<user>@<computer>.jsonl`. Each machine only writes its own
+file, so cloud sync never has two people editing the same file, which is
+what corrupts a shared database. Everyone reads all the files, and the
+latest change to a task wins. Duplicate "conflicted copy" files and lines
+that are only half synced are handled. Because the order comes from each
+computer's clock, keep clocks set automatically.
+
 ## Folder logic
 
 With the default config, files are routed to destinations such as:
@@ -131,6 +173,9 @@ python main.py --root /path/to/project --init      # set up a project config
 python main.py --root /path/to/project --dry-run   # preview
 python main.py --root /path/to/project             # sort once
 python main.py --root /path/to/project --report    # latest versions per shot/asset
+python main.py --root /path/to/project --status    # task status grid
+python main.py --root /path/to/project --show SH05 # one shot: tasks, versions, notes
+python main.py --root /path/to/project --set-status SH05 layout wip
 python main.py --root /path/to/project --watch     # keep sorting as files arrive
 python main.py --root /path/to/project --batch --batch-size 50
 ```
@@ -161,6 +206,7 @@ python -m unittest discover -s tests
 | `rules.py`      | Rule engine: where each file goes               |
 | `project.py`    | Loads and validates the project config          |
 | `versions.py`   | Version index and report                        |
+| `tracking.py`   | Task statuses, notes, assignments (event logs)  |
 | `default_project.toml` | Default (TUP) project config             |
 | `filesystem.py` | Safe moves, stability checks, collision renames |
 | `watcher.py`    | Watch mode (watchdog)                           |
