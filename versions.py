@@ -25,6 +25,11 @@ class ParsedName:
     name: str
     version: int | None
     frame: int | None
+    copy: bool = False  # the sorter renamed it to avoid overwriting: a second file claiming this version
+
+
+# The sorter renames clashes to <name>_001, _002...; see resolve_collision
+COPY_SUFFIX_RE = re.compile(r"_\d{3}$")
 
 
 def _last_match(pattern: re.Pattern[str], text: str) -> re.Match[str] | None:
@@ -44,6 +49,17 @@ def parse_name(filename: str, project: Project) -> ParsedName:
     path = PurePosixPath(filename)
     stem, suffix = path.stem, path.suffix
 
+    # SH05_layout_v004_001.ma is a clash copy of v004, not a new file called
+    # SH05_layout_001.ma; only treat it so when a version or frame comes right before
+    copy = False
+    found = COPY_SUFFIX_RE.search(stem)
+    if found:
+        base = stem[: found.start()]
+        version_end = _last_match(project.version_pattern, base)
+        frame_end = _last_match(project.frame_pattern, base) if project.frame_pattern else None
+        if any(m is not None and m.end() == len(base) for m in (version_end, frame_end)):
+            stem, copy = base, True
+
     frame = None
     if project.frame_pattern:
         found = _last_match(project.frame_pattern, stem)
@@ -58,7 +74,7 @@ def parse_name(filename: str, project: Project) -> ParsedName:
         version = int(found.group("version"))
         stem = stem[: found.start()] + stem[found.end() :]
 
-    return ParsedName(stem + suffix, version, frame)
+    return ParsedName(stem + suffix, version, frame, copy)
 
 
 # Index Model
@@ -68,6 +84,7 @@ class Version:
     files: list[Path] = field(default_factory=list)
     modified: float = 0.0
     is_sequence: bool = False
+    copies: list[Path] = field(default_factory=list)
 
     @property
     def label(self) -> str:
@@ -82,9 +99,11 @@ class Product:
     task: str | None
     versions: dict[int | None, Version] = field(default_factory=dict)
 
-    def add(self, number: int | None, path: Path, is_sequence: bool) -> None:
+    def add(self, number: int | None, path: Path, is_sequence: bool, is_copy: bool = False) -> None:
         version = self.versions.setdefault(number, Version(number))
         version.files.append(path)
+        if is_copy:
+            version.copies.append(path)
         version.is_sequence = version.is_sequence or is_sequence
         version.modified = max(version.modified, path.stat().st_mtime)
 
@@ -158,7 +177,7 @@ def scan_versions(project: Project, root: Path | None = None) -> VersionIndex:
         parsed = parse_name(path.name, project)
         key = (rule.task or "", parsed.name.lower())
         product = entity.products.setdefault(key, Product(parsed.name, rule.task))
-        product.add(parsed.version, path, parsed.frame is not None)
+        product.add(parsed.version, path, parsed.frame is not None, parsed.copy)
 
     # Entity types appear in the order the config first uses them
     type_order: dict[str | None, int] = {}

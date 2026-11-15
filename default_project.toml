@@ -350,6 +350,22 @@ then_task = "textures"
 then_status = "ready"
 
 
+# Statuses that keep themselves up to date from the files people save, so
+# nobody has to remember to click. Remove a key to turn that part off.
+[auto_status]
+# A task's first file moves it out of these statuses...
+start_from = ["todo", "ready"]
+# ...into this one.
+started = "wip"
+# A new version after a retake moves the task back to work in progress.
+after_retake = "wip"
+
+# Warnings shown in the project browser and --status.
+[health]
+# An active task with no new file or update for this many days is "stalled".
+stale_days = 7
+
+
 # Files that match no rule.
 [fallback]
 dest = "incoming"

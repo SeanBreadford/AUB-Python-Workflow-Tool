@@ -62,6 +62,19 @@ class TaskState:
     updated: str | None = None
     updated_by: str | None = None
     notes: list[Note] = field(default_factory=list)
+    # From the files: newest version number per product (unversioned = 0)
+    latest: dict[str, int] = field(default_factory=dict)
+    # Versions the last status decision was made on, e.g. what was approved
+    decided_on: dict[str, int] | None = None
+    last_activity: str | None = None
+    # "Two files claim SH05_layout.ma v004"
+    conflicts: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class Flag:
+    code: str     # changed_after_approval, newer_than_submitted, stalled, conflict
+    message: str
 
 
 @dataclass
@@ -77,6 +90,8 @@ class Tracker:
     entities: list[TrackedEntity]
     tasks: dict[tuple[str, str], TaskState]
     unreadable_lines: int = 0
+    # Everything that happened, oldest first: files, status changes, notes
+    activity: list[dict] = field(default_factory=list)
 
     def tasks_for(self, entity: str) -> list[TaskState]:
         """Configured tasks first, in config order, then any others seen."""
@@ -109,6 +124,12 @@ class Tracker:
     def with_flag(self, flag: str) -> list[TaskState]:
         codes = {s.code for s in self.project.statuses if getattr(s, flag)}
         return [s for s in self.tasks.values() if s.status in codes]
+
+    def flags(self, state: TaskState, now: datetime | None = None) -> list[Flag]:
+        return task_flags(self.project, state, now)
+
+    def all_flags(self, now: datetime | None = None) -> list[tuple[TaskState, Flag]]:
+        return [(state, flag) for state in self.tasks.values() for flag in task_flags(self.project, state, now)]
 
 
 # Reading
@@ -153,11 +174,44 @@ def _known_entities(project: Project, index: VersionIndex | None) -> list[Tracke
     return list(entities.values())
 
 
+def iso_from_mtime(mtime: float) -> str:
+    return datetime.fromtimestamp(mtime, timezone.utc).isoformat(timespec="milliseconds")
+
+
+def file_events(index: VersionIndex | None) -> list[dict]:
+    """
+    One event per saved version, timed by the file's modified time. These are
+    worked out from disk on every load and never written anywhere, so files
+    are the record of what artists did without anyone typing it in.
+    """
+    events = []
+    for entity in index.entities if index else ():
+        for product in entity.products.values():
+            if product.task is None:
+                continue
+            for version in product.history():
+                events.append({
+                    "type": "file",
+                    "time": iso_from_mtime(version.modified),
+                    "entity": entity.name,
+                    "entity_type": entity.entity_type,
+                    "task": product.task,
+                    "product": product.name,
+                    "version": version.number,
+                    "label": version.label,
+                    "files": len(version.files),
+                    "copies": len(version.copies),
+                })
+    return events
+
+
 def build_tracker(project: Project, index: VersionIndex | None = None) -> Tracker:
     if not project.statuses:
         raise TrackingError("No [[statuses]] in the project config, so tracking is off.")
 
     events, bad = load_events(project)
+    # Files first on equal times; the sort is stable
+    events = sorted(file_events(index) + events, key=lambda e: e.get("time", ""))
     entities = _known_entities(project, index)
     tracker = Tracker(project, entities, {}, bad)
     default = project.default_status.code
@@ -180,24 +234,58 @@ def build_tracker(project: Project, index: VersionIndex | None = None) -> Tracke
             tracker.unreadable_lines += 1
             continue
         time, user = event.get("time", ""), event.get("user", "?")
+        state.last_activity = max(state.last_activity or "", time)
+        base = {"time": time, "entity": state.entity, "task": state.task}
 
-        if event["type"] == "status":
+        if event["type"] == "file":
+            product, number = event["product"], event.get("version") or 0
+            state.latest[product] = max(state.latest.get(product, -1), number)
+            if event.get("copies"):
+                state.conflicts.append(f"{event['copies'] + 1} files claim {product} {event['label']}")
+            tracker.activity.append({**base, "kind": "file", "product": product, "label": event["label"],
+                                     "files": event["files"]})
+            _auto_status(project, tracker, state, time, state_for)
+        elif event["type"] == "status":
             state.status = str(event.get("status", default)).lower()
             state.updated, state.updated_by = time, user
+            # What the decision was made on: recorded at the time, else what the files said then
+            decided = event.get("versions")
+            state.decided_on = dict(decided) if isinstance(decided, dict) else dict(state.latest)
             if event.get("note"):
                 state.notes.append(Note(time, user, event["note"], state.status))
-            _run_automations(project, state, time, user, state_for)
+            tracker.activity.append({**base, "kind": "status", "user": user, "status": state.status,
+                                     "note": event.get("note")})
+            _run_automations(project, tracker, state, time, user, state_for)
         elif event["type"] == "note":
             state.notes.append(Note(time, user, str(event.get("text", ""))))
+            tracker.activity.append({**base, "kind": "note", "user": user, "note": str(event.get("text", ""))})
         elif event["type"] == "assign":
             state.assignee = event.get("assignee") or None
             state.updated, state.updated_by = time, user
+            tracker.activity.append({**base, "kind": "assign", "user": user, "assignee": state.assignee})
 
     tracker.entities.sort(key=lambda e: natural_key(e.name))
     return tracker
 
 
-def _run_automations(project, state: TaskState, time: str, user: str, state_for) -> None:
+def _set_auto(tracker: Tracker, state: TaskState, status: str, time: str, by: str) -> None:
+    state.status = status
+    state.updated, state.updated_by = time, by
+    tracker.activity.append({"time": time, "entity": state.entity, "task": state.task, "kind": "status",
+                             "user": by, "status": status, "auto": True})
+
+
+def _auto_status(project: Project, tracker: Tracker, state: TaskState, time: str, state_for) -> None:
+    """A new file is evidence of work: move the task along without anyone clicking."""
+    status = project.status(state.status)
+    if project.auto_started and state.status in project.auto_start_from:
+        _set_auto(tracker, state, project.auto_started, time, "files")
+        _run_automations(project, tracker, state, time, "files", state_for)
+    elif project.auto_after_retake and status is not None and status.retake:
+        _set_auto(tracker, state, project.auto_after_retake, time, "files")
+
+
+def _run_automations(project, tracker: Tracker, state: TaskState, time: str, user: str, state_for) -> None:
     """
     Apply matching automations. Only tasks that haven't started (still at the
     default status) are moved, so an automation never undoes someone's work.
@@ -209,8 +297,48 @@ def _run_automations(project, state: TaskState, time: str, user: str, state_for)
             continue
         target = state_for(state.entity, state.entity_type, automation.then_task)
         if target.status == project.default_status.code:
-            target.status = automation.then_status
-            target.updated, target.updated_by = time, f"{user} (automation)"
+            _set_auto(tracker, target, automation.then_status, time, f"{user} (automation)")
+
+
+# Health
+def _newer(state: TaskState) -> list[str]:
+    """Products with a version newer than the one the last decision was made on."""
+    if state.decided_on is None:
+        return []
+    found = []
+    for product, number in sorted(state.latest.items()):
+        decided = state.decided_on.get(product)
+        if decided is None:
+            found.append(f"{product} (new since then)")
+        elif number > decided:
+            found.append(f"{product} v{number:03d} (decision was on v{decided:03d})")
+    return found
+
+
+def task_flags(project: Project, state: TaskState, now: datetime | None = None) -> list[Flag]:
+    """Problems worth someone's attention, worked out fresh from the current state."""
+    flags = []
+    status = project.status(state.status)
+    newer = _newer(state)
+    if status is not None and status.done and newer:
+        flags.append(Flag("changed_after_approval", "Changed after approval: " + "; ".join(newer)))
+    if status is not None and status.feedback_request and newer:
+        flags.append(Flag("newer_than_submitted", "Newer than what was sent for review: " + "; ".join(newer)))
+    for conflict in state.conflicts:
+        flags.append(Flag("conflict", f"Version clash: {conflict}. Two people may have saved the same version."))
+
+    active = status is not None and not status.default and not status.done
+    if project.stale_days and active and state.last_activity:
+        now = now or datetime.now(timezone.utc)
+        try:
+            idle = (now - datetime.fromisoformat(state.last_activity)).days
+        except ValueError:
+            idle = 0
+        if idle >= project.stale_days:
+            what = "Retake noted" if status.retake else "No new file or update"
+            flags.append(Flag("stalled", f"{what} {idle} days ago" if status.retake
+                              else f"{what} for {idle} days"))
+    return flags
 
 
 # Writing
@@ -253,6 +381,11 @@ def record_event(
         data["status"] = status.code
 
     user = user or current_user()
+    if event_type == "status":
+        # Pin the decision to the versions that exist right now (what the person saw)
+        latest = tracker.task(entity.name, task).latest
+        if latest and "versions" not in data:
+            data["versions"] = dict(latest)  # type: ignore[assignment]
     event = {
         "id": uuid.uuid4().hex,
         "time": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),

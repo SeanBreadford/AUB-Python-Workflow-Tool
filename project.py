@@ -107,6 +107,12 @@ class Project:
     statuses: tuple[Status, ...] = ()
     task_types: dict[str, tuple[str, ...]] | None = None
     automations: tuple[Automation, ...] = ()
+    # Statuses kept up to date from files (see [auto_status]); None = off
+    auto_start_from: tuple[str, ...] = ()
+    auto_started: str | None = None
+    auto_after_retake: str | None = None
+    # Warn when an active task has had no new file or change for this long
+    stale_days: int | None = None
 
     @property
     def default_status(self) -> Status | None:
@@ -514,6 +520,31 @@ def _parse_project(root: Path, config_path: Path, data: dict) -> Project:
     task_types = _parse_task_types(_Table(top.get("task_types", dict, {}), "task_types"))
     automations = _parse_automations(top.get("automations", list, []), statuses, task_types)
 
+    codes = {s.code for s in statuses}
+
+    def status_code(table: _Table, key: str) -> str | None:
+        code = table.get(key, str, None)
+        if code is not None and code.lower() not in codes:
+            raise ProjectConfigError(f"{table.where}.{key}: unknown status '{code}'")
+        return code.lower() if code else None
+
+    auto = _Table(top.get("auto_status", dict, {}), "auto_status")
+    auto_start_from = tuple(c.lower() for c in auto.str_list("start_from", []))
+    for code in auto_start_from:
+        if code not in codes:
+            raise ProjectConfigError(f"auto_status.start_from: unknown status '{code}'")
+    auto_started = status_code(auto, "started")
+    auto_after_retake = status_code(auto, "after_retake")
+    auto.done()
+    if auto_started and not auto_start_from:
+        raise ProjectConfigError("auto_status: 'started' needs 'start_from' (which statuses count as not started)")
+
+    health = _Table(top.get("health", dict, {}), "health")
+    stale_days = health.get("stale_days", int, None)
+    health.done()
+    if stale_days is not None and stale_days < 1:
+        raise ProjectConfigError("health.stale_days: must be at least 1")
+
     top.done()
 
     return Project(
@@ -536,4 +567,8 @@ def _parse_project(root: Path, config_path: Path, data: dict) -> Project:
         statuses=statuses,
         task_types=task_types,
         automations=automations,
+        auto_start_from=auto_start_from,
+        auto_started=auto_started,
+        auto_after_retake=auto_after_retake,
+        stale_days=stale_days,
     )
