@@ -11,6 +11,7 @@ from tkinter import filedialog, messagebox, ttk
 from config import DEFAULT_BATCH_SIZE, ROOT
 from filesystem import set_operation_callback, sort_project, sort_project_batch
 from project import ProjectConfigError, ProjectNotFoundError, init_project, load_project
+from versions import format_report, scan_versions
 
 try:
     from watcher import DebouncedHandler, Observer
@@ -223,6 +224,19 @@ class FileSorterGUI:
             cursor="hand2",
         )
         self.watch_btn.pack(side="left", padx=(8, 0))
+
+        report_btn = tk.Button(
+            actions,
+            text="Version Report",
+            command=self.start_report,
+            bg="#444",
+            fg="white",
+            relief="flat",
+            padx=14,
+            pady=10,
+            cursor="hand2",
+        )
+        report_btn.pack(side="left", padx=(8, 0))
 
         clear_btn = tk.Button(
             actions,
@@ -461,6 +475,28 @@ class FileSorterGUI:
         self.progress.stop()
         self.sort_btn.configure(state="normal")
         self.status_var.set(status)
+
+    # Report Actions
+    def start_report(self) -> None:
+        root = Path(self.root_var.get()).expanduser().resolve()
+        if not root.exists():
+            messagebox.showerror("Invalid root", f"Folder does not exist:\n{root}")
+            return
+        if not self._ensure_project(root):
+            return
+        self.status_var.set("Scanning versions...")
+        threading.Thread(target=self._report_worker, args=(root,), daemon=True).start()
+
+    def _report_worker(self, root: Path) -> None:
+        try:
+            report = format_report(scan_versions(load_project(root), root))
+            for line in report.splitlines():
+                self.log_queue.put(line or " ")
+            status = "Version report complete."
+        except Exception as error:
+            self.log_queue.put(f"ERROR: {error}")
+            status = "Version report failed."
+        self.root.after(0, self.status_var.set, status)
 
     # Watch Actions
     def toggle_watch(self) -> None:

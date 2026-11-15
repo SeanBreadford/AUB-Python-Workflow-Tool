@@ -17,6 +17,8 @@ carried the tidy tree back to everyone.
 - **Batch mode** for large folders
 - **Config-driven rules**: each project's folder structure, naming rules and
   shot list live in one TOML file, so new projects need no code changes
+- **Version tracking**: lists the latest version of every shot and asset
+  file, read straight from the sorted files
 - **Safe by default**: refuses to run on a folder that isn't set up as a project
 - **Shot mapping**: `SHxx` goes to its act, sequence and scene folders
 - **Cloud-safe**: waits until a file has stopped changing before moving it,
@@ -60,6 +62,36 @@ regexes and destinations outside the project are reported with the rule
 name, and nothing is sorted. Watch mode reloads the config on every change,
 so edits apply without a restart.
 
+## Version tracking
+
+`--report` (or **Version Report** in the GUI) lists what exists for every shot
+and asset, without changing anything:
+
+```text
+$ python main.py --root ~/TUP --report
+== shot (1) ==
+SH05  (Act_1 / SQ_01 / SC_05)
+  3d        SH05_set.blend                -  2026-11-15 15:07
+  layout    SH05_layout.ma             v002  2026-11-15 15:07  2 versions
+  renders   SH05_beauty_####.exr       v002  2026-11-15 15:07  3 frames
+
+== prop (1) ==
+prop_OilLamp
+  model     prop_OilLamp.fbx           v002  2026-11-15 15:07
+```
+
+It follows ShotGrid's publish convention. A file's name is its filename with
+the version removed, so `SH05_layout_v001.ma` and `SH05_layout_v002.ma` are
+two versions of `SH05_layout.ma`, and versions are grouped by entity, then
+task, then name. Frame numbers become `####`, so a render sequence is one
+item. The latest version is the highest number, not the newest file.
+
+Everything is read from the files on disk, so there is no database to keep in
+sync between machines. Which rules are tracked is set in the config with
+`entity`, `entity_type` and `task`, and the version and frame patterns are
+in its `[versions]` section. Files that belong somewhere but haven't been
+sorted yet are counted at the end of the report.
+
 ## Folder logic
 
 With the default config, files are routed to destinations such as:
@@ -98,6 +130,7 @@ python app.py                                  # open the GUI
 python main.py --root /path/to/project --init      # set up a project config
 python main.py --root /path/to/project --dry-run   # preview
 python main.py --root /path/to/project             # sort once
+python main.py --root /path/to/project --report    # latest versions per shot/asset
 python main.py --root /path/to/project --watch     # keep sorting as files arrive
 python main.py --root /path/to/project --batch --batch-size 50
 ```
@@ -127,6 +160,7 @@ python -m unittest discover -s tests
 | `gui.py`        | Tkinter interface                               |
 | `rules.py`      | Rule engine: where each file goes               |
 | `project.py`    | Loads and validates the project config          |
+| `versions.py`   | Version index and report                        |
 | `default_project.toml` | Default (TUP) project config             |
 | `filesystem.py` | Safe moves, stability checks, collision renames |
 | `watcher.py`    | Watch mode (watchdog)                           |

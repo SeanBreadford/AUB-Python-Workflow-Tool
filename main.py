@@ -6,6 +6,7 @@ from pathlib import Path
 from config import DEFAULT_BATCH_SIZE, ROOT
 from filesystem import sort_project, sort_project_batch
 from project import ProjectConfigError, ProjectNotFoundError, init_project, load_project
+from versions import format_report, scan_versions
 
 try:
     from watcher import watch_project
@@ -63,6 +64,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Create a default project config (_pipeline/project.toml) in --root",
     )
     parser.add_argument(
+        "--report",
+        action="store_true",
+        help="List the latest version of everything per shot and asset (changes nothing)",
+    )
+    parser.add_argument(
         "--fast-mode",
         action="store_true",
         help="Skip full stability checks (useful in watch mode)",
@@ -97,6 +103,11 @@ def main() -> None:
         project = load_project(root)
     except (ProjectNotFoundError, ProjectConfigError) as error:
         raise SystemExit(f"Error: {error}")
+
+    if args.report:
+        print(format_report(scan_versions(project, root)))
+        return
+
     if not args.quiet:
         print(f"Project: {project.name} ({project.config_path})")
 

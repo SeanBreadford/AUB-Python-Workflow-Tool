@@ -1,8 +1,23 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 
-from project import Project
+from project import Project, Rule
+
+
+@dataclass(frozen=True)
+class Match:
+    folder: Path
+    label: str
+    rule: Rule | None = None
+    fields: dict[str, str] | None = None
+
+    @property
+    def entity(self) -> str | None:
+        if self.rule is None or self.rule.entity is None:
+            return None
+        return self.rule.entity.format_map(self.fields or {})
 
 
 # Path Helpers
@@ -29,10 +44,8 @@ def _inside(path: Path, root: Path) -> bool:
 
 
 # Rule Engine
-def match_rule(path: Path, project: Project) -> tuple[Path, str] | None:
-    """
-    Return (destination folder, rule label) for a file, or None to leave it.
-    """
+def match_rule(path: Path, project: Project) -> Match | None:
+    """Return where a file belongs and which rule said so, or None to leave it."""
     name = path.name
     base = project.base_fields()
 
@@ -48,12 +61,12 @@ def match_rule(path: Path, project: Project) -> tuple[Path, str] | None:
         # Captured fields come from filenames, so make sure they can't escape
         if not _inside(folder.resolve(strict=False), project.root):
             return None
-        return folder, rule.label
+        return Match(folder, rule.label, rule, fields)
 
     # Fallback only applies to files in the configured drop folders
     if project.fallback_dest and path.resolve().parent in project.fallback_from:
         folder = _reuse_existing_case(project.root, Path(project.fallback_dest))
-        return folder, "fallback"
+        return Match(folder, "fallback")
 
     return None
 
@@ -63,5 +76,4 @@ def choose_destination(path: Path, project: Project) -> Path | None:
     matched = match_rule(path, project)
     if matched is None:
         return None
-    folder, _ = matched
-    return folder / path.name
+    return matched.folder / path.name

@@ -96,6 +96,13 @@ last = 54
 # dest is the destination folder, relative to the project root. Fields go in
 # braces: {production}, any named group, and the shot fields above.
 #
+# Version tracking (python main.py --report) uses three optional keys:
+#   entity       what the file belongs to, e.g. "{shot}" or "prop_{asset}"
+#   entity_type  a group for the entity, e.g. "shot" or "prop"
+#   task         the kind of work, e.g. "layout" or "textures"
+# Rules without an entity aren't tracked. Cases inherit all three from their
+# rule and can override them.
+#
 # A rule can have [[rules.cases]]: sub-rules checked in order, each with its
 # own conditions. A case's dest is relative to the rule's dest, and a case
 # without conditions catches everything else. If no case matches, the next
@@ -108,6 +115,9 @@ last = 54
 name = "Shot render frames"
 pattern = '(?P<shot>sh\d{2,3})_.*[_\-]\d{4,6}\.(png|tga|exr|jpg|jpeg|tif|tiff)$'
 dest = "{shot_dir}/renders"
+entity = "{shot}"
+entity_type = "shot"
+task = "renders"
 
 [[rules]]
 name = "Render frames without a shot"
@@ -166,68 +176,99 @@ dest = "concept_art/Anim/2D/char"
 name = "Characters"
 pattern = 'char_(?P<asset>[^_.]+)'
 dest = "{production}/assets/3d/char/char_{asset}"
+entity = "char_{asset}"
+entity_type = "char"
     [[rules.cases]]
     ext = ["model"]
     dest = "model"
+    task = "model"
     [[rules.cases]]
     ext = ["texture"]
     dest = "textures"
+    task = "textures"
     [[rules.cases]]
 
 [[rules]]
 name = "Props"
 pattern = 'prop_(?P<asset>[^_.]+)'
 dest = "{production}/assets/3d/props/prop_{asset}"
+entity = "prop_{asset}"
+entity_type = "prop"
     [[rules.cases]]
     ext = ["model"]
     dest = "model"
+    task = "model"
     [[rules.cases]]
     ext = ["texture"]
     dest = "textures"
+    task = "textures"
     [[rules.cases]]
 
 [[rules]]
 name = "Environments"
 pattern = 'env_(?P<asset>[^_.]+)'
 dest = "{production}/assets/3d/env/env_{asset}"
+entity = "env_{asset}"
+entity_type = "env"
     [[rules.cases]]
     ext = ["model"]
     dest = "model"
+    task = "model"
     [[rules.cases]]
     ext = ["texture"]
     dest = "textures"
+    task = "textures"
     [[rules.cases]]
 
 [[rules]]
 name = "Shot files"
 pattern = '(?P<shot>sh\d{2,3})_'
 dest = "{shot_dir}"
+entity = "{shot}"
+entity_type = "shot"
     [[rules.cases]]
     contains = ["layout"]
     dest = "layout"
+    task = "layout"
     [[rules.cases]]
     ext = [".ma"]
     dest = "layout"
+    task = "layout"
     [[rules.cases]]
     ext = [".blend", ".fbx", ".obj", ".mb"]
     dest = "3d"
+    task = "3d"
     [[rules.cases]]
     ext = [".xstage", ".psd", ".png"]
     contains = ["anim"]
     dest = "2d"
+    task = "2d"
     [[rules.cases]]
     contains = ["fx2d", "fx3d"]
     dest = "fx"
+    task = "fx"
     [[rules.cases]]
     ext = ["comp"]
     dest = "comp"
+    task = "comp"
     [[rules.cases]]
     ext = ["image"]
     dest = "renders"
+    task = "renders"
     [[rules.cases]]
     contains = ["render"]
     dest = "renders"
+    task = "renders"
     [[rules.cases]]
+
+
+# How versions and image sequences are read from filenames (without the
+# extension). The version is removed to get the name that versions are grouped
+# under: SH05_layout_v003.ma and SH05_layout_v004.ma are two versions of
+# SH05_layout.ma. Frame numbers become #### so a sequence is one item.
+[versions]
+pattern = '[_.\-]v(?P<version>\d+)(?=[_.\-]|$)'
+frame_pattern = '[_.\-](?P<frame>\d{4,6})$'
 
 
 # Files that match no rule.

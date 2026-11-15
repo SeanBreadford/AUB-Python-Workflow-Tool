@@ -140,7 +140,7 @@ def _rel(path: Path, project: Project) -> Path:
         return path
 
 
-def _already_sorted(src: Path, dest: Path) -> bool:
+def is_already_sorted(src: Path, dest: Path) -> bool:
     # samefile also catches case-only differences on Windows and macOS
     if dest.exists():
         try:
@@ -176,7 +176,7 @@ def process_file(
         _emit("skipped")
         return
 
-    if _already_sorted(src, dest):
+    if is_already_sorted(src, dest):
         log(f"OK (already sorted): {rel}", quiet)
         _emit("skipped")
         return

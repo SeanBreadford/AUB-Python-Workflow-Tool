@@ -16,6 +16,8 @@ DEFAULT_CONFIG_PATH = Path(__file__).with_name("default_project.toml")
 BASE_FIELDS = frozenset({"production"})
 SHOT_FIELDS = frozenset({"shot_dir", "act", "sequence", "scene"})
 UNASSIGNED = "unassigned"
+# "_v003" / ".v3" / "-v12", followed by a separator or the end of the name
+DEFAULT_VERSION_PATTERN = r"[_.\-]v(?P<version>\d+)(?=[_.\-]|$)"
 
 
 class ProjectNotFoundError(Exception):
@@ -34,6 +36,11 @@ class Rule:
     exts: tuple[frozenset[str], ...]
     contains: tuple[tuple[str, ...], ...]
     dest: str
+    # What the file belongs to, for version tracking. entity is a template
+    # like "{shot}" or "prop_{asset}"; rules without one aren't tracked.
+    entity: str | None = None
+    entity_type: str | None = None
+    task: str | None = None
 
     def match(self, name: str) -> dict[str, str] | None:
         """Return captured fields if every condition holds, else None."""
@@ -71,6 +78,8 @@ class Project:
     rules: tuple[Rule, ...]
     fallback_dest: str | None
     fallback_from: frozenset[Path]
+    version_pattern: re.Pattern[str]
+    frame_pattern: re.Pattern[str] | None
 
     def base_fields(self) -> dict[str, str]:
         production = self.production_root.relative_to(self.root).as_posix()
@@ -189,11 +198,11 @@ def _join_dest(parent: str | None, child: str | None) -> str | None:
     return child or parent
 
 
-def _compile_pattern(source: str, where: str) -> re.Pattern[str]:
+def _compile_pattern(source: str, where: str, key: str = "pattern") -> re.Pattern[str]:
     try:
         return re.compile(source, re.IGNORECASE)
     except re.error as error:
-        raise ProjectConfigError(f"{where}.pattern: invalid regex: {error}") from error
+        raise ProjectConfigError(f"{where}.{key}: invalid regex: {error}") from error
 
 
 # Section Parsers
@@ -262,7 +271,12 @@ def _parse_conditions(
     return patterns, exts, contains
 
 
-def _make_rule(label, patterns, exts, contains, dest, where) -> Rule:
+def _parse_tracking(table: _Table, inherited: dict[str, str | None]) -> dict[str, str | None]:
+    """entity / entity_type / task, falling back to the parent rule's values."""
+    return {key: table.get(key, str, inherited.get(key)) for key in ("entity", "entity_type", "task")}
+
+
+def _make_rule(label, patterns, exts, contains, dest, tracking, where) -> Rule:
     if not dest:
         raise ProjectConfigError(f"{where}: missing dest")
     _check_relative(dest, where)
@@ -272,13 +286,18 @@ def _make_rule(label, patterns, exts, contains, dest, where) -> Rule:
         available |= set(pattern.groupindex)
     if "shot" in available:
         available |= SHOT_FIELDS
-    unknown = _placeholders(dest, where) - available
-    if unknown:
-        raise ProjectConfigError(
-            f"{where}: dest uses unknown field(s) {', '.join(sorted(unknown))}; "
-            f"available: {', '.join(sorted(available))}"
-        )
-    return Rule(label, tuple(patterns), tuple(exts), tuple(contains), dest)
+    for key, template in (("dest", dest), ("entity", tracking["entity"])):
+        if template is None:
+            continue
+        unknown = _placeholders(template, where) - available
+        if unknown:
+            raise ProjectConfigError(
+                f"{where}: {key} uses unknown field(s) {', '.join(sorted(unknown))}; "
+                f"available: {', '.join(sorted(available))}"
+            )
+    if tracking["entity"] is None and (tracking["entity_type"] or tracking["task"]):
+        raise ProjectConfigError(f"{where}: entity_type and task need an entity")
+    return Rule(label, tuple(patterns), tuple(exts), tuple(contains), dest, **tracking)
 
 
 def _parse_rules(raw_rules: list, file_groups: dict[str, frozenset[str]]) -> tuple[Rule, ...]:
@@ -289,13 +308,14 @@ def _parse_rules(raw_rules: list, file_groups: dict[str, frozenset[str]]) -> tup
         table.where = f"rules[{index}] ({name})"
         patterns, exts, contains = _parse_conditions(table, file_groups)
         dest = table.get("dest", str, None)
+        tracking = _parse_tracking(table, {})
         raw_cases = table.get("cases", list, None)
         table.done()
 
         if raw_cases is None:
             if not (patterns or exts or contains):
                 raise ProjectConfigError(f"{table.where}: needs at least one of pattern, ext, contains")
-            rules.append(_make_rule(name, patterns, exts, contains, dest, table.where))
+            rules.append(_make_rule(name, patterns, exts, contains, dest, tracking, table.where))
             continue
 
         # Flatten cases into plain rules: parent and case conditions both apply
@@ -303,6 +323,7 @@ def _parse_rules(raw_rules: list, file_groups: dict[str, frozenset[str]]) -> tup
             case = _Table(raw_case, f"{table.where}.cases[{case_index}]")
             case_patterns, case_exts, case_contains = _parse_conditions(case, file_groups)
             case_dest = case.get("dest", str, None)
+            case_tracking = _parse_tracking(case, tracking)
             case.done()
             rules.append(
                 _make_rule(
@@ -311,6 +332,7 @@ def _parse_rules(raw_rules: list, file_groups: dict[str, frozenset[str]]) -> tup
                     exts + case_exts,
                     contains + case_contains,
                     _join_dest(dest, case_dest),
+                    case_tracking,
                     case.where,
                 )
             )
@@ -357,6 +379,18 @@ def _parse_project(root: Path, config_path: Path, data: dict) -> Project:
     for folder in fallback_from:
         _check_relative(folder, "fallback.from")
 
+    versions = _Table(top.get("versions", dict, {}), "versions")
+    version_pattern = _compile_pattern(
+        versions.get("pattern", str, DEFAULT_VERSION_PATTERN), "versions"
+    )
+    if "version" not in version_pattern.groupindex:
+        raise ProjectConfigError("versions.pattern: needs a (?P<version>...) group")
+    frame_source = versions.get("frame_pattern", str, None)
+    frame_pattern = _compile_pattern(frame_source, "versions", "frame_pattern") if frame_source else None
+    if frame_pattern and "frame" not in frame_pattern.groupindex:
+        raise ProjectConfigError("versions.frame_pattern: needs a (?P<frame>...) group")
+    versions.done()
+
     top.done()
 
     return Project(
@@ -374,4 +408,6 @@ def _parse_project(root: Path, config_path: Path, data: dict) -> Project:
         rules=rules,
         fallback_dest=fallback_dest,
         fallback_from=frozenset((root / folder).resolve() for folder in fallback_from),
+        version_pattern=version_pattern,
+        frame_pattern=frame_pattern,
     )
