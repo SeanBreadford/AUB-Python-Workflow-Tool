@@ -7,10 +7,12 @@ import tempfile
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
+from unittest import mock
 
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
+import filesystem  # noqa: E402
 from config import CONFIG_DIR_NAME, CONFIG_FILE_NAME  # noqa: E402
 from filesystem import sort_project  # noqa: E402
 from project import (  # noqa: E402
@@ -151,6 +153,53 @@ class SortTests(ProjectTestCase):
         with redirect_stdout(out):
             sort_project(self.root / "production", fast_mode=True)
         self.assertTrue((self.root / SHOT_05 / "3d/SH05_set.blend").exists())
+
+
+class CloudSafetyTests(ProjectTestCase):
+    def test_file_still_changing_is_deferred_others_move(self) -> None:
+        for name in ("SH05_set.blend", "SH06_set.blend", "SH07_set.blend"):
+            (self.root / name).write_text("x")
+        growing = self.root / "SH06_set.blend"
+
+        def sync_writes_during_the_wait(_seconds: float) -> None:
+            with growing.open("a") as handle:
+                handle.write("more data arriving")
+
+        with mock.patch.object(filesystem.time, "sleep", side_effect=sync_writes_during_the_wait) as sleep:
+            output = self.sort()
+
+        sleep.assert_called_once()  # one shared wait, not one per file
+        self.assertIn("DEFER (still changing): SH06_set.blend", output)
+        self.assertEqual(output.count("MOVED"), 2)
+        self.assertTrue(growing.exists())
+
+    def test_locked_file_is_deferred_not_an_error(self) -> None:
+        (self.root / "SH05_set.blend").write_text("x")
+        stats: list[str] = []
+        filesystem.set_operation_callback(stats.append)
+        self.addCleanup(filesystem.set_operation_callback, None)
+        with mock.patch.object(filesystem, "MOVE_RETRY_DELAY", 0), \
+                mock.patch.object(filesystem.shutil, "move", side_effect=PermissionError("locked")):
+            output = self.sort(fast_mode=True)
+        self.assertIn("DEFER (in use, will retry next sort): SH05_set.blend", output)
+        self.assertNotIn("errors", stats)
+        self.assertTrue((self.root / "SH05_set.blend").exists())
+
+    def test_check_never_opens_files(self) -> None:
+        # Opening an online-only OneDrive file can make it download
+        path = self.root / "SH05_set.blend"
+        path.write_text("x")
+        with mock.patch.object(Path, "open", side_effect=AssertionError("file was opened")), \
+                mock.patch("builtins.open", side_effect=AssertionError("file was opened")):
+            stable, busy = filesystem.split_stable([path], delay=0)
+        self.assertEqual((stable, busy), ([path], []))
+
+    def test_dry_run_and_fast_mode_do_not_wait(self) -> None:
+        (self.root / "SH05_set.blend").write_text("x")
+        with mock.patch.object(filesystem.time, "sleep") as sleep:
+            self.sort(dry_run=True)
+            self.sort(fast_mode=True)
+        sleep.assert_not_called()
 
 
 class ConfigTests(unittest.TestCase):

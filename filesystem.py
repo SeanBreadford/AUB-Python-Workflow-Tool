@@ -2,16 +2,11 @@ from __future__ import annotations
 
 import shutil
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable, Optional
 
-from config import (
-    CONFIG_DIR_NAME,
-    INTER_BATCH_DELAY,
-    STABILITY_RETRIES,
-    STABILITY_RETRY_DELAY,
-    STABILITY_SAMPLE_DELAY,
-)
+from config import CONFIG_DIR_NAME, INTER_BATCH_DELAY, STABILITY_SAMPLE_DELAY
 from project import Project, load_project
 from rules import choose_destination
 
@@ -57,36 +52,34 @@ def is_in_ignored_dir(path: Path, project: Project) -> bool:
     return False
 
 
-def is_file_stable(path: Path, retries: int = STABILITY_RETRIES) -> bool:
-    """
-    Checks if a file is not changing in size and can be read.
-    Useful for cloud sync folders.
-    """
-    if not path.exists() or not path.is_file():
-        return False
-
-    for _ in range(retries):
-        try:
-            size1 = path.stat().st_size
-            time.sleep(STABILITY_SAMPLE_DELAY)
-            size2 = path.stat().st_size
-            if size1 == size2 and size1 >= 0:
-                with path.open("rb") as handle:
-                    handle.read(1)
-                return True
-        except OSError:
-            pass
-        time.sleep(STABILITY_RETRY_DELAY)
-    return False
-
-
-def is_file_accessible(path: Path) -> bool:
+def _signature(path: Path) -> tuple[int, int] | None:
     try:
-        with path.open("rb") as handle:
-            handle.read(1)
-        return True
+        stat = path.stat()
     except OSError:
-        return False
+        return None
+    return stat.st_size, stat.st_mtime_ns
+
+
+def split_stable(paths: Iterable[Path], delay: float = STABILITY_SAMPLE_DELAY) -> tuple[list[Path], list[Path]]:
+    """
+    Cloud safety check for many files at once: note every file's size and
+    modified time, wait once, and look again. Files that didn't change are
+    safe to move; the rest are still being written or synced.
+
+    Only metadata is read, never file contents: opening an online-only
+    OneDrive / Google Drive file can make it download.
+    """
+    paths = list(paths)
+    before = {path: _signature(path) for path in paths}
+    if paths and delay > 0:
+        time.sleep(delay)
+    stable, busy = [], []
+    for path in paths:
+        now = _signature(path)
+        if now is None:
+            continue  # gone (moved or deleted by someone else); nothing to do
+        (stable if now == before[path] else busy).append(path)
+    return stable, busy
 
 
 # Collision Helpers
@@ -114,22 +107,26 @@ def iter_files(root: Path, project: Project) -> Iterable[Path]:
 
 
 # Move Helpers
-def robust_move(src: Path, dest: Path, retries: int = 3) -> bool:
+MOVE_RETRY_DELAY = 1.5
+
+
+class FileInUseError(Exception):
+    """The file stayed locked (open in an app, or by the sync client)."""
+
+
+def robust_move(src: Path, dest: Path, retries: int = 3) -> None:
+    """Move with retries. Raises FileInUseError if the file stays locked."""
     for attempt in range(retries):
         try:
             shutil.move(str(src), str(dest))
-            return True
-        except PermissionError:
-            if attempt < retries - 1:
-                time.sleep(1.5 * (attempt + 1))
-                continue
-            return False
+            return
+        except PermissionError as error:
+            if attempt == retries - 1:
+                raise FileInUseError(str(error)) from error
         except OSError:
-            if attempt < retries - 1:
-                time.sleep(1.5 * (attempt + 1))
-                continue
-            return False
-    return False
+            if attempt == retries - 1:
+                raise
+        time.sleep(MOVE_RETRY_DELAY * (attempt + 1))
 
 
 # Core Processing
@@ -150,69 +147,68 @@ def is_already_sorted(src: Path, dest: Path) -> bool:
     return src.resolve() == dest.resolve(strict=False)
 
 
-def process_file(
-    src: Path,
-    project: Project,
-    dry_run: bool,
-    quiet: bool,
-    fast_mode: bool = False,
-) -> None:
+@dataclass(frozen=True)
+class PlannedMove:
+    src: Path
+    rel: Path
+    dest: Path
+
+
+def plan_file(src: Path, project: Project, quiet: bool) -> PlannedMove | None:
+    """Decide where a file goes, logging why if it stays put."""
     try:
         rel = src.resolve().relative_to(project.root)
     except ValueError:
         log(f"SKIP (outside project): {src}", quiet)
         _emit("skipped")
-        return
+        return None
 
     # Watch mode passes files directly, so ignored dirs must be checked here too
     if is_ignored_file(src, project) or is_in_ignored_dir(src, project):
         log(f"SKIP (ignored): {rel}", quiet)
         _emit("skipped")
-        return
+        return None
 
     dest = choose_destination(src, project)
     if dest is None:
         log(f"SKIP (no rule): {rel}", quiet)
         _emit("skipped")
-        return
+        return None
 
     if is_already_sorted(src, dest):
         log(f"OK (already sorted): {rel}", quiet)
         _emit("skipped")
-        return
+        return None
 
-    # Cloud safety checks (dry run moves nothing, so skip the slow check)
-    if fast_mode or dry_run:
-        ready = is_file_accessible(src)
-    else:
-        ready = is_file_stable(src)
+    return PlannedMove(src, rel, dest)
 
-    if not ready:
-        log(f"DEFER (not ready): {rel}", quiet)
-        _emit("skipped")
-        return
 
-    final_dest = dest
+def move_file(plan: PlannedMove, project: Project, dry_run: bool, quiet: bool) -> None:
+    final_dest = plan.dest
     if final_dest.exists():
         final_dest = resolve_collision(final_dest)
         log(f"COLLISION (renamed): {_rel(final_dest, project)}", quiet)
 
     if dry_run:
-        log(f"DRY RUN: {rel} -> {_rel(final_dest, project)}", quiet)
+        log(f"DRY RUN: {plan.rel} -> {_rel(final_dest, project)}", quiet)
         _emit("processed")
         return
 
     final_dest.parent.mkdir(parents=True, exist_ok=True)
-
-    moved = robust_move(src, final_dest)
-    if moved:
-        log(f"MOVED: {rel} -> {_rel(final_dest, project)}", quiet)
-        _emit("moved")
-        _emit("processed")
-    else:
-        log(f"ERROR (move failed): {rel}", quiet)
+    try:
+        robust_move(plan.src, final_dest)
+    except FileInUseError:
+        log(f"DEFER (in use, will retry next sort): {plan.rel}", quiet)
+        _emit("skipped")
+        return
+    except OSError as error:
+        log(f"ERROR (move failed): {plan.rel}: {error}", quiet)
         _emit("errors")
         _emit("processed")
+        return
+    log(f"MOVED: {plan.rel} -> {_rel(final_dest, project)}", quiet)
+    _emit("moved")
+    _emit("processed")
 
 
 def _process_all(
@@ -222,17 +218,33 @@ def _process_all(
     quiet: bool,
     fast_mode: bool,
 ) -> None:
+    plans: list[PlannedMove] = []
     for src in targets:
         try:
-            process_file(
-                src=Path(src),
-                project=project,
-                dry_run=dry_run,
-                quiet=quiet,
-                fast_mode=fast_mode,
-            )
+            plan = plan_file(Path(src), project, quiet)
         except Exception as error:
             log(f"ERROR ({Path(src).name}): {error}", quiet)
+            _emit("errors")
+            continue
+        if plan is not None:
+            plans.append(plan)
+
+    # One shared wait for the whole batch instead of one per file. Dry runs
+    # move nothing and fast mode skips the wait, so neither needs it.
+    if plans and not dry_run and not fast_mode:
+        stable, busy = split_stable(plan.src for plan in plans)
+        ready = set(stable)
+        for plan in plans:
+            if plan.src not in ready and plan.src in busy:
+                log(f"DEFER (still changing): {plan.rel}", quiet)
+                _emit("skipped")
+        plans = [plan for plan in plans if plan.src in ready]
+
+    for plan in plans:
+        try:
+            move_file(plan, project, dry_run, quiet)
+        except Exception as error:
+            log(f"ERROR ({plan.src.name}): {error}", quiet)
             _emit("errors")
 
 

@@ -130,7 +130,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--fast-mode",
         action="store_true",
-        help="Skip full stability checks (useful in watch mode)",
+        help="Skip the cloud-safety wait (only if nothing is still syncing)",
     )
 
     return parser
@@ -226,7 +226,7 @@ def main() -> None:
             root=root,
             dry_run=args.dry_run,
             quiet=args.quiet,
-            fast_mode=True,
+            fast_mode=args.fast_mode,
         )
         return
 

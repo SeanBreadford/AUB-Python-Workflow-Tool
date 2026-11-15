@@ -220,8 +220,8 @@ python main.py --root /path/to/project --watch     # keep sorting as files arriv
 python main.py --root /path/to/project --batch --batch-size 50
 ```
 
-Other options: `--quiet` (less logging), `--fast-mode` (skip the full
-stability check), `--gui`. The root can also be set with the
+Other options: `--quiet` (less logging), `--fast-mode` (skip the cloud-safety
+wait), `--gui`. The root can also be set with the
 `FILE_SORTER_ROOT` environment variable.
 
 A standalone executable can be built with PyInstaller:

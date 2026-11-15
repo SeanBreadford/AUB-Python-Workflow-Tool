@@ -43,7 +43,7 @@ class DebouncedHandler(FileSystemEventHandler):  # type: ignore[misc]
         root: Path,
         dry_run: bool = False,
         quiet: bool = True,
-        fast_mode: bool = True,
+        fast_mode: bool = False,
         debounce_seconds: float = DEBOUNCE_SECONDS,
     ) -> None:
         self.root = root.resolve()
@@ -119,7 +119,7 @@ def watch_project(
     root: Path,
     dry_run: bool = False,
     quiet: bool = False,
-    fast_mode: bool = True,
+    fast_mode: bool = False,
     debounce_seconds: float = DEBOUNCE_SECONDS,
 ) -> None:
     if Observer is None:

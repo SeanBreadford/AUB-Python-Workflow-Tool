@@ -575,7 +575,7 @@ class FileSorterGUI:
             root=root,
             dry_run=self.dry_run_var.get(),
             quiet=False,
-            fast_mode=True,
+            fast_mode=self.fast_mode_var.get(),
         )
         self.observer = Observer()
         self.observer.schedule(self.handler, str(root), recursive=True)

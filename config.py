@@ -17,8 +17,8 @@ CONFIG_DIR_NAME = "_pipeline"
 CONFIG_FILE_NAME = "project.toml"
 
 # Cloud Safety Config
-STABILITY_RETRIES = 10
-STABILITY_RETRY_DELAY = 1.0
+# Files must keep the same size and modified time for this long before they
+# are moved. One wait covers a whole sort (or batch), not one per file.
 STABILITY_SAMPLE_DELAY = 0.4
 
 # Watch Config
