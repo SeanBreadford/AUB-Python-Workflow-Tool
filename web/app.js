@@ -3,6 +3,7 @@
 // notes come from other people's synced files, so treat them as untrusted.
 
 const POLL_MS = 4000;
+const OFFLINE = "Can't reach the project browser. Is the app still running? Changes can't be saved until it is.";
 const $ = (id) => document.getElementById(id);
 
 const state = {
@@ -45,7 +46,12 @@ async function api(path, body) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   };
-  const response = await fetch(path, options);
+  let response;
+  try {
+    response = await fetch(path, options);
+  } catch {
+    throw new Error(OFFLINE);
+  }
   const data = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(data.error || `Request failed (${response.status})`);
   return data;
@@ -106,12 +112,20 @@ async function loadAll({ rescan = false } = {}) {
   }
 }
 
+function setOffline(message) {
+  const banner = $("offline");
+  banner.textContent = message || "";
+  banner.hidden = !message;
+}
+
 async function poll() {
   try {
     const { version } = await api("/api/version");
+    setOffline(null);
     if (version !== state.version) await loadAll();
-  } catch {
-    // Server gone (app closed) or project unreachable; keep trying quietly
+  } catch (error) {
+    // App closed or restarted: say so, and keep checking in case it comes back
+    setOffline(error.message);
   }
   setTimeout(poll, POLL_MS);
 }

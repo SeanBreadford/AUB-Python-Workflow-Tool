@@ -6,8 +6,9 @@ import json
 import sys
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -225,6 +226,37 @@ class ApiTests(ServerTestCase):
         self.assertEqual((response.status, len(body)), (206, 24))
         response, _ = self.request("GET", video, headers={"Range": "bytes=5000-"})
         self.assertEqual(response.status, 416)
+
+    def test_locked_file_gives_a_clear_error(self) -> None:
+        # e.g. OneDrive holding the events file on Windows
+        real_open = Path.open
+
+        def locked_events(path, *args, **kwargs):
+            if path.suffix == ".jsonl" and args and "a" in args[0]:
+                raise PermissionError(13, "Permission denied", str(path))
+            return real_open(path, *args, **kwargs)
+
+        with mock.patch.object(Path, "open", locked_events):
+            status, data = self.json("POST", "/api/task", {"entity": "SH05", "task": "comp", "user": "alex",
+                                                           "status": "wip"})
+        self.assertEqual(status, 503)
+        self.assertRegex(data["error"], r"Couldn't access alex@.*\.jsonl: Permission denied")
+        self.assertIn("try again", data["error"])
+        self.assertEqual(build_tracker(self.project).task("SH05", "comp").status, "todo")
+
+    def test_unexpected_error_is_reported_and_server_survives(self) -> None:
+        with mock.patch("webapp.overview_json", side_effect=RuntimeError("boom")), \
+                redirect_stderr(io.StringIO()) as log:
+            status, data = self.json("GET", "/api/overview")
+        self.assertEqual((status, data["error"]), (500, "Unexpected error: boom"))
+        self.assertIn("RuntimeError: boom", log.getvalue())  # full traceback for whoever runs the server
+        status, _ = self.json("GET", "/api/overview")
+        self.assertEqual(status, 200)
+
+    def test_expired_session_explains_itself(self) -> None:
+        status, data = self.json("GET", "/api/overview", auth=False)
+        self.assertEqual(status, 403)
+        self.assertIn("Open the Project Browser again", data["error"])
 
     def test_reveal(self) -> None:
         _, data = self.json("GET", "/api/entity?name=SH05")

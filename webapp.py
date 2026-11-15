@@ -11,6 +11,7 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 import webbrowser
 from http import HTTPStatus
 from http.cookies import SimpleCookie
@@ -46,6 +47,7 @@ from versions import VersionIndex, scan_versions
 
 WEB_DIR = Path(__file__).with_name("web")
 COOKIE_NAME = "pb_session"
+SESSION_ENDED = "This page's session has ended (the app was restarted). Open the Project Browser again from the app."
 RESCAN_AFTER_SECONDS = 30
 IMAGE_EXT = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
 VIDEO_EXT = {".mp4", ".mov", ".webm", ".m4v"}
@@ -270,6 +272,7 @@ class Handler(BaseHTTPRequestHandler):
 
     # Responses
     def _send(self, status: int, body: bytes, content_type: str, headers: dict | None = None) -> None:
+        self._response_started = True
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
@@ -282,6 +285,32 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         if self.command != "HEAD":
             self.wfile.write(body)
+
+    def _guard(self, action) -> None:
+        """Run a route; turn any failure into a JSON error the page can show."""
+        self._response_started = False
+        try:
+            action()
+        except (ProjectNotFoundError, ProjectConfigError) as error:
+            self._fail(HTTPStatus.CONFLICT, str(error))
+        except TrackingError as error:
+            self._fail(HTTPStatus.BAD_REQUEST, str(error))
+        except OSError as error:
+            # Usually a file locked by the sync app (OneDrive on Windows) or a permissions problem
+            name = Path(error.filename).name if error.filename else "a project file"
+            self._fail(HTTPStatus.SERVICE_UNAVAILABLE,
+                       f"Couldn't access {name}: {error.strerror or error}. If the sync app is busy "
+                       "with it, try again in a moment.")
+        except Exception as error:  # noqa: BLE001 - last resort, keep the server alive
+            traceback.print_exc()
+            self._fail(HTTPStatus.INTERNAL_SERVER_ERROR, f"Unexpected error: {error}")
+
+    def _fail(self, status: int, message: str) -> None:
+        if self._response_started:
+            # Headers already sent (e.g. mid-video): all we can do is hang up
+            self.close_connection = True
+            return
+        self._error(status, message)
 
     def _json(self, data, status: int = 200) -> None:
         self._send(status, json.dumps(data).encode(), "application/json")
@@ -308,21 +337,23 @@ class Handler(BaseHTTPRequestHandler):
                               {"Location": "/", "Set-Cookie": cookie})
 
         if not self._authed():
+            if url.path.startswith("/api/"):
+                return self._error(HTTPStatus.FORBIDDEN, SESSION_ENDED)
             return self._send(HTTPStatus.FORBIDDEN,
                               b"Open the project browser from the app (or the link it printed).",
                               "text/plain; charset=utf-8")
 
-        try:
-            if url.path == "/":
-                return self._static("index.html")
-            if url.path.startswith("/static/"):
-                return self._static(url.path[len("/static/"):])
-            if url.path.startswith("/media/"):
-                return self._media(url.path[len("/media/"):])
-            if url.path.startswith("/api/"):
-                return self._api_get(url.path[len("/api/"):], parse_qs(url.query))
-        except (ProjectNotFoundError, ProjectConfigError, TrackingError) as error:
-            return self._error(HTTPStatus.CONFLICT, str(error))
+        self._guard(lambda: self._route_get(url))
+
+    def _route_get(self, url) -> None:
+        if url.path == "/":
+            return self._static("index.html")
+        if url.path.startswith("/static/"):
+            return self._static(url.path[len("/static/"):])
+        if url.path.startswith("/media/"):
+            return self._media(url.path[len("/media/"):])
+        if url.path.startswith("/api/"):
+            return self._api_get(url.path[len("/api/"):], parse_qs(url.query))
         return self._error(HTTPStatus.NOT_FOUND, "Not found")
 
     def do_POST(self) -> None:
@@ -339,7 +370,9 @@ class Handler(BaseHTTPRequestHandler):
 
         if not self._host_ok():
             return self._error(HTTPStatus.FORBIDDEN, "Unexpected Host header")
-        if not self._authed() or not self._origin_ok():
+        if not self._authed():
+            return self._error(HTTPStatus.FORBIDDEN, SESSION_ENDED)
+        if not self._origin_ok():
             return self._error(HTTPStatus.FORBIDDEN, "Not allowed")
         if self.headers.get("Content-Type", "").split(";")[0].strip() != "application/json":
             return self._error(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, "Expected JSON")
@@ -350,19 +383,16 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError:
             return self._error(HTTPStatus.BAD_REQUEST, "Invalid JSON")
 
-        try:
-            path = urlsplit(self.path).path
-            if path == "/api/task":
-                return self._api_task(body)
-            if path == "/api/rescan":
-                self.server.state.get(rescan=True)
-                return self._json({"ok": True})
-            if path == "/api/reveal":
-                return self._api_reveal(body)
-        except (ProjectNotFoundError, ProjectConfigError) as error:
-            return self._error(HTTPStatus.CONFLICT, str(error))
-        except TrackingError as error:
-            return self._error(HTTPStatus.BAD_REQUEST, str(error))
+        self._guard(lambda: self._route_post(urlsplit(self.path).path, body))
+
+    def _route_post(self, path: str, body: dict) -> None:
+        if path == "/api/task":
+            return self._api_task(body)
+        if path == "/api/rescan":
+            self.server.state.get(rescan=True)
+            return self._json({"ok": True})
+        if path == "/api/reveal":
+            return self._api_reveal(body)
         return self._error(HTTPStatus.NOT_FOUND, "Not found")
 
     # Static Files
@@ -411,6 +441,7 @@ class Handler(BaseHTTPRequestHandler):
             status = HTTPStatus.PARTIAL_CONTENT
 
         length = end - start + 1
+        self._response_started = True
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(length))

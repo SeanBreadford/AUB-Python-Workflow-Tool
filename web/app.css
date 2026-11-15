@@ -59,6 +59,11 @@ button, input, select, textarea { font: inherit; color: inherit; }
 }
 .icon-button:hover { background: var(--input); color: var(--text); }
 
+.offline {
+  position: sticky; top: 0; z-index: 6; margin: 0; padding: 10px 20px;
+  background: #5c1d1d; color: #ffe0e0; border-bottom: 1px solid #8a2c2c; font-weight: 500;
+}
+
 /* Status legend doubles as a filter */
 .legend { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 12px 20px 0; }
 .legend .hint { color: var(--muted); font-size: 12px; margin-right: 4px; }

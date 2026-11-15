@@ -163,6 +163,9 @@ python main.py --root ~/TUP --serve
   brings them in. The page rescans files every 30 seconds, after a sort,
   or when you press **Refresh**.
 - Links like `#SH05/layout` open straight to a task.
+- If the app is closed or restarted, the page says so in a banner instead of
+  failing silently, and errors such as a file locked by the sync app are
+  shown with what went wrong.
 
 Status colours can be set per status with `color = "#rrggbb"` in the
 project config.
