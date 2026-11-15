@@ -12,6 +12,8 @@ carried the tidy tree back to everyone.
 ## Features
 
 - **GUI** (Tkinter) and **command line**
+- **Project browser**: shots and assets, their tasks, versions and notes in
+  one window, with status changes, assignments and comments
 - **Dry run**: preview every move without changing any files
 - **Watch mode**: sort automatically as files arrive (needs `watchdog`)
 - **Batch mode** for large folders
@@ -134,6 +136,26 @@ latest change to a task wins. Duplicate "conflicted copy" files and lines
 that are only half synced are handled. Because the order comes from each
 computer's clock, keep clocks set automatically.
 
+## Project browser
+
+The GUI's **Project Browser** tab brings the tracking and version data
+together:
+
+- **Left:** shots grouped by act and sequence, then characters, props and
+  environments, with how many tasks are done. Colours show the most urgent
+  status: red for a retake, orange for waiting for review, green when
+  everything is done.
+- **Middle:** the selected shot's tasks with status, assignee, latest version
+  and last change.
+- **Right:** the selected task's versions (double-click one to open its
+  folder), its notes, and a form to change the status, assignee or add a
+  comment. A comment saved with a status change is attached to it, like a
+  Kitsu review comment.
+
+Put your name in the **You** box; changes are recorded under it. The browser
+picks up other people's changes every few seconds as cloud sync brings them
+in, and rescans the files after a sort or when you press **Refresh**.
+
 ## Folder logic
 
 With the default config, files are routed to destinations such as:
@@ -196,13 +218,18 @@ Run the tests with:
 python -m unittest discover -s tests
 ```
 
+The GUI tests are skipped when there's no display. On Linux they can run on a
+virtual one with `xvfb-run python -m unittest discover -s tests`.
+
 ## Project layout
 
 | File            | Purpose                                         |
 | --------------- | ----------------------------------------------- |
 | `app.py`        | GUI entry point                                 |
 | `main.py`       | Command-line entry point                        |
-| `gui.py`        | Tkinter interface                               |
+| `gui.py`        | Tkinter interface (Sorter tab)                  |
+| `browser.py`    | Project Browser tab                             |
+| `theme.py`      | Shared colours and widget styling               |
 | `rules.py`      | Rule engine: where each file goes               |
 | `project.py`    | Loads and validates the project config          |
 | `versions.py`   | Version index and report                        |

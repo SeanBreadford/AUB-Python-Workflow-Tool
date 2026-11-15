@@ -8,10 +8,12 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
+from browser import ProjectBrowser
 from config import DEFAULT_BATCH_SIZE, ROOT
 from filesystem import set_operation_callback, sort_project, sort_project_batch
 from project import ProjectConfigError, ProjectNotFoundError, init_project, load_project
 from tracking import build_tracker
+from theme import COLORS, apply_ttk_style
 from versions import format_report, scan_versions
 
 try:
@@ -21,20 +23,6 @@ except Exception:
     DebouncedHandler = None  # type: ignore[assignment]
     Observer = None  # type: ignore[assignment]
     WATCH_AVAILABLE = False
-
-
-# UI Theme
-COLORS = {
-    "bg": "#121212",
-    "panel": "#1e1e1e",
-    "input": "#2a2a2a",
-    "text": "#eaeaea",
-    "muted": "#a8a8a8",
-    "accent": "#3a86ff",
-    "success": "#4caf50",
-    "warning": "#ff9800",
-    "error": "#ef5350",
-}
 
 
 # Log Writer
@@ -56,7 +44,8 @@ class FileSorterGUI:
     def __init__(self, root_window: tk.Tk) -> None:
         self.root = root_window
         self.root.title("Production File Organiser")
-        self.root.geometry("980x700")
+        self.root.geometry("1200x780")
+        self.root.minsize(900, 600)
         self.root.configure(bg=COLORS["bg"])
 
         # State
@@ -91,17 +80,38 @@ class FileSorterGUI:
 
     # UI Build
     def _build_ui(self) -> None:
-        container = tk.Frame(self.root, bg=COLORS["bg"])
-        container.pack(fill="both", expand=True, padx=14, pady=14)
+        apply_ttk_style(self.root)
+        outer = tk.Frame(self.root, bg=COLORS["bg"])
+        outer.pack(fill="both", expand=True, padx=14, pady=14)
 
         title = tk.Label(
-            container,
+            outer,
             text="Production File Organiser",
             bg=COLORS["bg"],
             fg=COLORS["text"],
             font=("Segoe UI", 18, "bold"),
         )
         title.pack(anchor="w", pady=(0, 10))
+
+        # Status bar (shared by both tabs)
+        status_bar = tk.Label(
+            outer,
+            textvariable=self.status_var,
+            bg=COLORS["bg"],
+            fg=COLORS["muted"],
+            anchor="w",
+            font=("Segoe UI", 9),
+        )
+        status_bar.pack(side="bottom", fill="x", pady=(8, 0))
+
+        self.notebook = ttk.Notebook(outer)
+        self.notebook.pack(fill="both", expand=True)
+        self.browser = ProjectBrowser(self.notebook, self)
+        container = tk.Frame(self.notebook, bg=COLORS["bg"], padx=10, pady=10)
+        self.browser.configure(padx=10, pady=10)
+        self.notebook.add(container, text="Sorter")
+        self.notebook.add(self.browser, text="Project Browser")
+        self.notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
 
         # Root picker
         root_panel = tk.Frame(container, bg=COLORS["panel"])
@@ -254,7 +264,7 @@ class FileSorterGUI:
         )
         clear_btn.pack(side="left", padx=(8, 0))
 
-        self.progress = ttk.Progressbar(actions, mode="indeterminate")
+        self.progress = ttk.Progressbar(actions, mode="determinate", value=0)
         self.progress.pack(side="right", fill="x", expand=True, padx=(20, 0))
 
         # Stats
@@ -320,18 +330,11 @@ class FileSorterGUI:
         self.log_text.pack(fill="both", expand=True, padx=10, pady=(0, 10))
         self.log_text.configure(state="disabled")
 
-        # Status bar
-        status_bar = tk.Label(
-            container,
-            textvariable=self.status_var,
-            bg=COLORS["bg"],
-            fg=COLORS["muted"],
-            anchor="w",
-            font=("Segoe UI", 9),
-        )
-        status_bar.pack(fill="x", pady=(8, 0))
-
     # UI Actions
+    def _on_tab_changed(self, _event=None) -> None:
+        if self.notebook.select() == str(self.browser):
+            self.browser.ensure_loaded()
+
     def _browse_root(self) -> None:
         selected = filedialog.askdirectory(title="Select project root")
         if selected:
@@ -366,7 +369,7 @@ class FileSorterGUI:
                 callback(*args)
         except queue.Empty:
             pass
-        self.root.after(120, self._poll_log_queue)
+        self._poll_id = self.root.after(120, self._poll_log_queue)
 
     def call_soon(self, callback, *args) -> None:
         """Run callback on the Tk thread. Safe to call from any thread."""
@@ -445,6 +448,7 @@ class FileSorterGUI:
 
         self.processing = True
         self._reset_stats()
+        self.progress.configure(mode="indeterminate")
         self.progress.start(10)
         self.sort_btn.configure(state="disabled")
         self.status_var.set("Sorting...")
@@ -480,7 +484,9 @@ class FileSorterGUI:
 
     def _finish_sort_ui(self, status: str) -> None:
         self.processing = False
+        self.browser.mark_stale()
         self.progress.stop()
+        self.progress.configure(mode="determinate", value=0)
         self.sort_btn.configure(state="normal")
         self.status_var.set(status)
 
@@ -571,6 +577,9 @@ class FileSorterGUI:
         self.stop_watch()
         # small delay helps watchdog close cleanly
         time.sleep(0.05)
+        # Cancel pending timers so Tk doesn't call them after the window is gone
+        self.root.after_cancel(self._poll_id)
+        self.browser.stop()
         set_operation_callback(None)
         sys.stdout = self._old_stdout
 
