@@ -65,6 +65,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Create a default project config (_pipeline/project.toml) in --root",
     )
     parser.add_argument(
+        "--demo",
+        action="store_true",
+        help="Create a sample project in --root (an empty folder) to try the app",
+    )
+    parser.add_argument(
         "--report",
         action="store_true",
         help="List the latest version of everything per shot and asset (changes nothing)",
@@ -177,6 +182,19 @@ def main() -> None:
         return
 
     root = Path(args.root).expanduser().resolve()
+
+    if args.demo:
+        from demo import create_demo
+        from tracking import current_user
+
+        you = args.user or current_user()
+        try:
+            create_demo(root, you)
+        except FileExistsError as error:
+            raise SystemExit(f"Error: {error}")
+        print(f"Created a demo project in {root} (you are '{you}').")
+        print(f'Open it with:  python main.py --root "{root}" --serve')
+        return
 
     if args.init:
         try:

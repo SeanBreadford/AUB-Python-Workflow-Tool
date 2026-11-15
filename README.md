@@ -17,6 +17,19 @@ file starts a task, approvals are tied to a specific version, and it warns
 when an approved shot changes, when two people save the same version, or
 when work stalls.
 
+## Try it
+
+```bash
+python main.py --root ~/tup-demo --demo     # builds a sample project in an empty folder
+python main.py --root ~/tup-demo --serve    # opens the project browser
+```
+
+The demo recreates real production problems, one per shot: SH01 was changed
+after approval, SH02 got a newer version after it was sent for review, SH03
+has a retake nobody answered, two people saved SH04's v004, SH05 (assigned
+to you) has new feedback, and SH06 and SH07 moved to work in progress just
+from files being saved.
+
 ## Features
 
 - **GUI** (Tkinter) and **command line**
@@ -263,6 +276,7 @@ python main.py --root /path/to/project --status    # task status grid
 python main.py --root /path/to/project --show SH05 # one shot: tasks, versions, notes
 python main.py --root /path/to/project --set-status SH05 layout wip
 python main.py --root /path/to/project --serve     # project browser web page
+python main.py --root /path/to/empty --demo        # sample project to try it on
 python main.py --root /path/to/project --watch     # keep sorting as files arrive
 python main.py --root /path/to/project --batch --batch-size 50
 ```
@@ -297,6 +311,7 @@ python -m unittest discover -s tests
 | `rules.py`      | Rule engine: where each file goes               |
 | `project.py`    | Loads and validates the project config          |
 | `versions.py`   | Version index and report                        |
+| `demo.py`       | Sample project for `--demo`                     |
 | `tracking.py`   | Task statuses, notes, assignments (event logs)  |
 | `default_project.toml` | Default (TUP) project config             |
 | `filesystem.py` | Safe moves, stability checks, collision renames |
