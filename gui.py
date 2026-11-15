@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import queue
+import sys
 import threading
 import time
 import tkinter as tk
@@ -58,6 +59,7 @@ class FileSorterGUI:
         # State
         self.processing = False
         self.log_queue: "queue.Queue[str]" = queue.Queue()
+        self.op_queue: "queue.Queue[str]" = queue.Queue()
         self.stats = {"processed": 0, "moved": 0, "skipped": 0, "errors": 0}
 
         # Watch state
@@ -75,6 +77,12 @@ class FileSorterGUI:
 
         self._build_ui()
         self._poll_log_queue()
+
+        # Route sorter output and stats to the GUI for the app's lifetime,
+        # so watch mode is visible too (and works when stdout is None in the exe)
+        self._old_stdout = sys.stdout
+        sys.stdout = QueueWriter(self.log_queue)
+        set_operation_callback(self._on_operation)
 
     # UI Build
     def _build_ui(self) -> None:
@@ -334,6 +342,11 @@ class FileSorterGUI:
                 self._append_log(message)
         except queue.Empty:
             pass
+        try:
+            while True:
+                self._apply_operation(self.op_queue.get_nowait())
+        except queue.Empty:
+            pass
         self.root.after(120, self._poll_log_queue)
 
     # Stats Helpers
@@ -351,7 +364,8 @@ class FileSorterGUI:
             self._refresh_stats()
 
     def _on_operation(self, operation: str) -> None:
-        self.root.after(0, self._apply_operation, operation)
+        # Called from worker threads: queue it for the Tk thread to apply
+        self.op_queue.put(operation)
 
     # Sort Actions
     def start_sort(self) -> None:
@@ -364,62 +378,60 @@ class FileSorterGUI:
             messagebox.showerror("Invalid root", f"Folder does not exist:\n{root}")
             return
 
+        try:
+            batch_size = max(1, self.batch_size_var.get())
+        except tk.TclError:
+            messagebox.showerror("Invalid batch size", "Batch size must be a whole number.")
+            return
+
+        # Read Tk variables here: they must not be touched from the worker thread
+        options = {
+            "dry_run": self.dry_run_var.get(),
+            "fast_mode": self.fast_mode_var.get(),
+            "batch": self.batch_var.get(),
+            "batch_size": batch_size,
+        }
+
         self.processing = True
+        self._reset_stats()
         self.progress.start(10)
         self.sort_btn.configure(state="disabled")
         self.status_var.set("Sorting...")
 
-        worker = threading.Thread(target=self._sort_worker, args=(root,), daemon=True)
+        worker = threading.Thread(target=self._sort_worker, args=(root, options), daemon=True)
         worker.start()
 
-    def _sort_worker(self, root: Path) -> None:
-        stream = QueueWriter(self.log_queue)
-        old_callback = set_operation_callback  # keep reference for clarity
-
+    def _sort_worker(self, root: Path, options: dict) -> None:
+        status = "Sort complete."
         try:
-            self._reset_stats()
-            set_operation_callback(self._on_operation)
-
-            # Redirect print logs from sorter
-            import sys
-            old_stdout = sys.stdout
-            sys.stdout = stream
-
-            try:
-                if self.batch_var.get():
-                    sort_project_batch(
-                        root=root,
-                        dry_run=self.dry_run_var.get(),
-                        quiet=False,
-                        batch_size=max(1, self.batch_size_var.get()),
-                        fast_mode=self.fast_mode_var.get(),
-                    )
-                else:
-                    sort_project(
-                        root=root,
-                        dry_run=self.dry_run_var.get(),
-                        quiet=False,
-                        fast_mode=self.fast_mode_var.get(),
-                    )
-            finally:
-                sys.stdout = old_stdout
-
-            if self.dry_run_var.get():
-                self.status_var.set("Dry run complete.")
+            if options["batch"]:
+                sort_project_batch(
+                    root=root,
+                    dry_run=options["dry_run"],
+                    quiet=False,
+                    batch_size=options["batch_size"],
+                    fast_mode=options["fast_mode"],
+                )
             else:
-                self.status_var.set("Sort complete.")
-
+                sort_project(
+                    root=root,
+                    dry_run=options["dry_run"],
+                    quiet=False,
+                    fast_mode=options["fast_mode"],
+                )
+            if options["dry_run"]:
+                status = "Dry run complete."
         except Exception as error:
             self.log_queue.put(f"ERROR: {error}")
-            self.status_var.set("Sort failed.")
+            status = "Sort failed."
         finally:
-            set_operation_callback(None)
-            self.processing = False
-            self.root.after(0, self._finish_sort_ui)
+            self.root.after(0, self._finish_sort_ui, status)
 
-    def _finish_sort_ui(self) -> None:
+    def _finish_sort_ui(self, status: str) -> None:
+        self.processing = False
         self.progress.stop()
         self.sort_btn.configure(state="normal")
+        self.status_var.set(status)
 
     # Watch Actions
     def toggle_watch(self) -> None:
@@ -444,6 +456,7 @@ class FileSorterGUI:
         if self.watching:
             return
 
+        self._reset_stats()
         self.handler = DebouncedHandler(
             root=root,
             dry_run=self.dry_run_var.get(),
@@ -480,6 +493,8 @@ class FileSorterGUI:
         self.stop_watch()
         # small delay helps watchdog close cleanly
         time.sleep(0.05)
+        set_operation_callback(None)
+        sys.stdout = self._old_stdout
 
 
 # Entry Point

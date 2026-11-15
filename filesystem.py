@@ -40,7 +40,7 @@ def is_ignored_file(path: Path) -> bool:
     lower_name = path.name.lower()
     if lower_name.startswith(IGNORED_PREFIXES):
         return True
-    return any(part in lower_name for part in IGNORED_NAME_PARTS)
+    return any(part.lower() in lower_name for part in IGNORED_NAME_PARTS)
 
 
 def is_in_ignored_dir(path: Path, root: Path) -> bool:
@@ -151,7 +151,8 @@ def process_file(
         _emit("skipped")
         return
 
-    if is_ignored_file(src):
+    # Watch mode passes files directly, so ignored dirs must be checked here too
+    if is_ignored_file(src) or is_in_ignored_dir(src, root):
         log(f"SKIP (ignored): {rel}", quiet)
         _emit("skipped")
         return
@@ -170,8 +171,8 @@ def process_file(
         _emit("skipped")
         return
 
-    # Cloud safety checks
-    if fast_mode:
+    # Cloud safety checks (dry run moves nothing, so skip the slow check)
+    if fast_mode or dry_run:
         ready = is_file_accessible(src)
     else:
         ready = is_file_stable(src)
