@@ -69,6 +69,23 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="List the latest version of everything per shot and asset (changes nothing)",
     )
+    web = parser.add_argument_group("project browser")
+    web.add_argument(
+        "--serve",
+        action="store_true",
+        help="Open the project browser web page (runs locally until Ctrl+C)",
+    )
+    web.add_argument(
+        "--port",
+        type=int,
+        default=0,
+        help="Port for --serve (default: any free port)",
+    )
+    web.add_argument(
+        "--no-open",
+        action="store_true",
+        help="With --serve, print the link instead of opening a browser",
+    )
     tracking = parser.add_argument_group("production tracking")
     tracking.add_argument(
         "--status",
@@ -175,6 +192,12 @@ def main() -> None:
         project = load_project(root)
     except (ProjectNotFoundError, ProjectConfigError) as error:
         raise SystemExit(f"Error: {error}")
+
+    if args.serve:
+        from webapp import serve
+
+        serve(project.root, port=args.port, open_browser=not args.no_open)
+        return
 
     if args.report:
         index = scan_versions(project, root)

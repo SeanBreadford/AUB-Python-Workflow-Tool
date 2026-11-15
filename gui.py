@@ -5,16 +5,17 @@ import sys
 import threading
 import time
 import tkinter as tk
+import webbrowser
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
-from browser import ProjectBrowser
 from config import DEFAULT_BATCH_SIZE, ROOT
 from filesystem import set_operation_callback, sort_project, sort_project_batch
 from project import ProjectConfigError, ProjectNotFoundError, init_project, load_project
 from tracking import build_tracker
 from theme import COLORS, apply_ttk_style
 from versions import format_report, scan_versions
+from webapp import BrowserServer
 
 try:
     from watcher import DebouncedHandler, Observer
@@ -55,6 +56,9 @@ class FileSorterGUI:
         # queue callables here and the Tk thread runs them
         self.ui_queue: "queue.Queue[tuple]" = queue.Queue()
         self.stats = {"processed": 0, "moved": 0, "skipped": 0, "errors": 0}
+
+        # Local web server for the project browser, started on demand
+        self.web_server: BrowserServer | None = None
 
         # Watch state
         self.watching = False
@@ -104,14 +108,8 @@ class FileSorterGUI:
         )
         status_bar.pack(side="bottom", fill="x", pady=(8, 0))
 
-        self.notebook = ttk.Notebook(outer)
-        self.notebook.pack(fill="both", expand=True)
-        self.browser = ProjectBrowser(self.notebook, self)
-        container = tk.Frame(self.notebook, bg=COLORS["bg"], padx=10, pady=10)
-        self.browser.configure(padx=10, pady=10)
-        self.notebook.add(container, text="Sorter")
-        self.notebook.add(self.browser, text="Project Browser")
-        self.notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
+        container = tk.Frame(outer, bg=COLORS["bg"])
+        container.pack(fill="both", expand=True)
 
         # Root picker
         root_panel = tk.Frame(container, bg=COLORS["panel"])
@@ -251,6 +249,19 @@ class FileSorterGUI:
         )
         report_btn.pack(side="left", padx=(8, 0))
 
+        browser_btn = tk.Button(
+            actions,
+            text="Project Browser",
+            command=self.open_browser,
+            bg="#444",
+            fg="white",
+            relief="flat",
+            padx=14,
+            pady=10,
+            cursor="hand2",
+        )
+        browser_btn.pack(side="left", padx=(8, 0))
+
         clear_btn = tk.Button(
             actions,
             text="Clear Log",
@@ -331,9 +342,27 @@ class FileSorterGUI:
         self.log_text.configure(state="disabled")
 
     # UI Actions
-    def _on_tab_changed(self, _event=None) -> None:
-        if self.notebook.select() == str(self.browser):
-            self.browser.ensure_loaded()
+    def open_browser(self) -> None:
+        """Serve the project browser locally and open it in the web browser."""
+        root = Path(self.root_var.get()).expanduser().resolve()
+        if not root.exists():
+            messagebox.showerror("Invalid root", f"Folder does not exist:\n{root}")
+            return
+        if not self._ensure_project(root):
+            return
+        project_root = load_project(root).root
+        if self.web_server is None or self.web_server.state.root != project_root:
+            self._stop_web_server()
+            self.web_server = BrowserServer(project_root)
+            self.web_server.start()
+            self.log_queue.put(f"Project browser: {self.web_server.url}")
+        webbrowser.open(self.web_server.url)
+        self.status_var.set("Project browser opened in your web browser.")
+
+    def _stop_web_server(self) -> None:
+        if self.web_server is not None:
+            self.web_server.stop()
+            self.web_server = None
 
     def _browse_root(self) -> None:
         selected = filedialog.askdirectory(title="Select project root")
@@ -484,7 +513,8 @@ class FileSorterGUI:
 
     def _finish_sort_ui(self, status: str) -> None:
         self.processing = False
-        self.browser.mark_stale()
+        if self.web_server is not None:
+            self.web_server.state.invalidate()  # files moved: rescan
         self.progress.stop()
         self.progress.configure(mode="determinate", value=0)
         self.sort_btn.configure(state="normal")
@@ -579,7 +609,7 @@ class FileSorterGUI:
         time.sleep(0.05)
         # Cancel pending timers so Tk doesn't call them after the window is gone
         self.root.after_cancel(self._poll_id)
-        self.browser.stop()
+        self._stop_web_server()
         set_operation_callback(None)
         sys.stdout = self._old_stdout
 

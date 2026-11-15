@@ -278,6 +278,8 @@ frame_pattern = '[_.\-](?P<frame>\d{4,6})$'
 #   done              the task is finished and approved
 #   feedback_request  the artist is waiting for review
 #   retake            review asked for changes
+# Optional: color = "#rrggbb" for the project browser. Without it, a colour
+# is picked from the flags. Text colour is chosen automatically for contrast.
 # Changes are stored in _pipeline/events/, one file per person and machine.
 
 [[statuses]]

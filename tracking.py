@@ -274,7 +274,87 @@ def record_event(
     return event
 
 
+_UNSET = object()
+
+
+def update_task(
+    tracker: Tracker,
+    entity: str,
+    task: str,
+    user: str,
+    status: str | None = None,
+    assignee: object = _UNSET,
+    comment: str | None = None,
+) -> list[dict]:
+    """
+    Apply a task form like Kitsu's comment panel: a status change carries the
+    comment with it; a comment without a status change becomes a note.
+    Only fields that actually change are recorded. Returns the new events.
+    """
+    if not user or not user.strip():
+        raise TrackingError("Enter your name first, so changes can be credited.")
+    user = user.strip()
+    state = tracker.task(entity, task)
+    entity_type = state.entity_type
+    comment = (comment or "").strip() or None
+    events = []
+
+    if status and status.lower() != state.status:
+        events.append(record_event(tracker, "status", entity, task, user=user, entity_type=entity_type,
+                                   status=status, note=comment))
+        comment = None
+    if assignee is not _UNSET:
+        new_assignee = (assignee or "").strip() or None  # type: ignore[union-attr]
+        if new_assignee != state.assignee:
+            events.append(record_event(tracker, "assign", entity, task, user=user,
+                                       entity_type=entity_type, assignee=new_assignee))
+    if comment:
+        events.append(record_event(tracker, "note", entity, task, user=user, entity_type=entity_type,
+                                   text=comment))
+    return events
+
+
+def events_stamp(project: Project) -> tuple:
+    """Changes whenever any events file is added, removed or grows."""
+    folder = events_dir(project)
+    if not folder.is_dir():
+        return ()
+    return tuple(sorted((p.name, p.stat().st_mtime_ns, p.stat().st_size) for p in folder.glob("*.jsonl")))
+
+
 # Display Helpers
+# Defaults checked for WCAG AA contrast (4.5:1) against their text colour
+DEFAULT_STATUS_COLORS = {"ready": "#2f6fd6", "wip": "#7a5fc0"}
+FLAG_COLORS = {"retake": "#c62828", "feedback_request": "#a85d00", "done": "#2e7d32", "default": "#3a3a3a"}
+FALLBACK_COLORS = ("#00796b", "#5d4037", "#ad1457", "#455a64", "#6a1b9a")
+
+
+def _luminance(hex_color: str) -> float:
+    channels = [int(hex_color[i:i + 2], 16) / 255 for i in (1, 3, 5)]
+    linear = [c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4 for c in channels]
+    return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]
+
+
+def contrast_ratio(a: str, b: str) -> float:
+    high, low = sorted((_luminance(a), _luminance(b)), reverse=True)
+    return (high + 0.05) / (low + 0.05)
+
+
+def status_colors(project: Project) -> dict[str, tuple[str, str]]:
+    """Status code -> (background, text), text picked for the best contrast."""
+    colors = {}
+    for index, status in enumerate(project.statuses):
+        background = status.color or DEFAULT_STATUS_COLORS.get(status.code)
+        if background is None:
+            flag = next((f for f in ("retake", "feedback_request", "done", "default") if getattr(status, f)), None)
+            background = FLAG_COLORS.get(flag) or FALLBACK_COLORS[index % len(FALLBACK_COLORS)]
+        text = max(("#ffffff", "#111111"), key=lambda t: contrast_ratio(background, t))
+        if status.default:
+            text = "#d0d0d0"  # quieter than white for "nothing happened yet"
+        colors[status.code] = (background, text)
+    return colors
+
+
 def local_time(iso: str | None) -> str:
     if not iso:
         return "-"

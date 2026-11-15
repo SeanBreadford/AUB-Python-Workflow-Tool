@@ -70,6 +70,8 @@ class Status:
     done: bool = False
     feedback_request: bool = False
     retake: bool = False
+    # "#rrggbb"; None picks a default from the flags (see status_color)
+    color: str | None = None
 
 
 @dataclass(frozen=True)
@@ -372,6 +374,14 @@ def _parse_rules(raw_rules: list, file_groups: dict[str, frozenset[str]]) -> tup
     return tuple(rules)
 
 
+def _parse_color(value: str | None, where: str) -> str | None:
+    if value is None:
+        return None
+    if not re.fullmatch(r"#[0-9a-fA-F]{6}", value):
+        raise ProjectConfigError(f"{where}.color: expected a colour like \"#2e7d32\", got '{value}'")
+    return value.lower()
+
+
 def _parse_statuses(raw_statuses: list) -> tuple[Status, ...]:
     statuses: list[Status] = []
     for index, raw in enumerate(raw_statuses):
@@ -390,6 +400,7 @@ def _parse_statuses(raw_statuses: list) -> tuple[Status, ...]:
                 done=table.get("done", bool, False),
                 feedback_request=table.get("feedback_request", bool, False),
                 retake=table.get("retake", bool, False),
+                color=_parse_color(table.get("color", str, None), table.where),
             )
         )
         table.done()

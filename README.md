@@ -12,8 +12,9 @@ carried the tidy tree back to everyone.
 ## Features
 
 - **GUI** (Tkinter) and **command line**
-- **Project browser**: shots and assets, their tasks, versions and notes in
-  one window, with status changes, assignments and comments
+- **Project browser** (web page): a Kitsu-style status grid of every shot and
+  asset, with thumbnails, image and video previews, notes, and status
+  changes; runs locally, no server needed
 - **Dry run**: preview every move without changing any files
 - **Watch mode**: sort automatically as files arrive (needs `watchdog`)
 - **Batch mode** for large folders
@@ -138,23 +139,39 @@ computer's clock, keep clocks set automatically.
 
 ## Project browser
 
-The GUI's **Project Browser** tab brings the tracking and version data
-together:
+The project browser is a web page that the app serves from your own computer.
+Open it with the **Project Browser** button in the desktop app, or:
 
-- **Left:** shots grouped by act and sequence, then characters, props and
-  environments, with how many tasks are done. Colours show the most urgent
-  status: red for a retake, orange for waiting for review, green when
-  everything is done.
-- **Middle:** the selected shot's tasks with status, assignee, latest version
-  and last change.
-- **Right:** the selected task's versions (double-click one to open its
-  folder), its notes, and a form to change the status, assignee or add a
-  comment. A comment saved with a status change is attached to it, like a
-  Kitsu review comment.
+```bash
+python main.py --root ~/TUP --serve
+```
 
-Put your name in the **You** box; changes are recorded under it. The browser
-picks up other people's changes every few seconds as cloud sync brings them
-in, and rescans the files after a sort or when you press **Refresh**.
+- **Status grid:** one row per shot (grouped by act and sequence) or asset,
+  one column per task, each cell a status chip. Every chip shows its status
+  as text as well as colour, and the colours meet WCAG AA contrast. Tasks
+  that haven't started are drawn quietly so progress stands out.
+- **Filters:** click statuses in the legend to show only, say, retakes;
+  search by name (press `/`).
+- **Detail panel:** click a shot or a chip to see its tasks; change the
+  status, assignee or add a comment (Ctrl+Enter saves). A comment saved with
+  a status change is attached to it, like a Kitsu review comment.
+- **Versions:** every version of every file, with previews. Images and
+  H.264 video play in the page; image sequences show their middle frame.
+  **Show in folder** opens the file's folder. Formats browsers can't show
+  (EXR, TIFF, scene files) are listed without a preview.
+- **Live:** other people's changes appear within a few seconds as cloud sync
+  brings them in. The page rescans files every 30 seconds, after a sort,
+  or when you press **Refresh**.
+- Links like `#SH05/layout` open straight to a task.
+
+Status colours can be set per status with `color = "#rrggbb"` in the
+project config.
+
+**Security.** The page is served on `127.0.0.1` only. The link the app opens
+carries a one-off secret that the page swaps for a cookie other websites
+can't send, and the server rejects requests addressed to any other host name
+(which blocks DNS rebinding) or writes from any other origin. Media is only
+served from inside the project, never from ignored folders.
 
 ## Folder logic
 
@@ -198,6 +215,7 @@ python main.py --root /path/to/project --report    # latest versions per shot/as
 python main.py --root /path/to/project --status    # task status grid
 python main.py --root /path/to/project --show SH05 # one shot: tasks, versions, notes
 python main.py --root /path/to/project --set-status SH05 layout wip
+python main.py --root /path/to/project --serve     # project browser web page
 python main.py --root /path/to/project --watch     # keep sorting as files arrive
 python main.py --root /path/to/project --batch --batch-size 50
 ```
@@ -218,8 +236,6 @@ Run the tests with:
 python -m unittest discover -s tests
 ```
 
-The GUI tests are skipped when there's no display. On Linux they can run on a
-virtual one with `xvfb-run python -m unittest discover -s tests`.
 
 ## Project layout
 
@@ -227,9 +243,10 @@ virtual one with `xvfb-run python -m unittest discover -s tests`.
 | --------------- | ----------------------------------------------- |
 | `app.py`        | GUI entry point                                 |
 | `main.py`       | Command-line entry point                        |
-| `gui.py`        | Tkinter interface (Sorter tab)                  |
-| `browser.py`    | Project Browser tab                             |
-| `theme.py`      | Shared colours and widget styling               |
+| `gui.py`        | Tkinter interface                               |
+| `webapp.py`     | Local web server for the project browser        |
+| `web/`          | Project browser page (HTML, CSS, JavaScript)    |
+| `theme.py`      | Desktop app colours and styling                 |
 | `rules.py`      | Rule engine: where each file goes               |
 | `project.py`    | Loads and validates the project config          |
 | `versions.py`   | Version index and report                        |
