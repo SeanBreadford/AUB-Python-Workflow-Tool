@@ -9,6 +9,14 @@ landing in the wrong place. The sorter ran on one machine, watched the synced
 folder and moved each new file to where it belonged. The cloud sync then
 carried the tidy tree back to everyone.
 
+**What makes it different:** production trackers like ShotGrid are only as
+accurate as the statuses people remember to click, which on small teams is
+not very. This one runs on the shared drive the team already uses (no server,
+no accounts) and keeps itself up to date from the files artists save: a new
+file starts a task, approvals are tied to a specific version, and it warns
+when an approved shot changes, when two people save the same version, or
+when work stalls.
+
 ## Features
 
 - **GUI** (Tkinter) and **command line**
@@ -24,6 +32,10 @@ carried the tidy tree back to everyone.
   file, read straight from the sorted files
 - **Production tracking**: task statuses, notes and assignments per shot
   and asset, with status automations, shared through the synced folder
+- **Updates itself from files**: statuses move as files arrive, approvals
+  are pinned to versions, and problems are flagged (see below)
+- **Activity feed** of every saved version and change, and **New for you**:
+  feedback on your tasks you haven't seen yet
 - **Safe by default**: refuses to run on a folder that isn't set up as a project
 - **Shot mapping**: `SHxx` goes to its act, sequence and scene folders
 - **Cloud-safe**: waits until a file has stopped changing before moving it,
@@ -137,6 +149,32 @@ latest change to a task wins. Duplicate "conflicted copy" files and lines
 that are only half synced are handled. Because the order comes from each
 computer's clock, keep clocks set automatically.
 
+## Tracking that keeps itself up to date
+
+The sorter already sees every file artists save, so the tracker uses them as
+evidence instead of relying on people to update statuses:
+
+- **Automatic statuses.** A task's first file moves it from `todo`/`ready`
+  to `wip`, and a new version after a retake moves it back to `wip`. Files
+  never undo a decision someone made.
+- **Approvals are of a version.** Setting a status records which versions
+  existed at that moment, so "approved" means "v003 approved".
+- **Warnings**, most serious first:
+  - *Version clash*: two files claim the same version (two people saved
+    `v004`; the sorter kept both).
+  - *Changed after approval*: a newer version appeared after sign-off.
+  - *Newer than what was sent for review*: the reviewer may be looking at
+    an old version.
+  - *Stalled*: an active task with no new file or update for
+    `stale_days`, or a retake nobody has answered.
+- **Activity feed** of files, status changes and notes, and **New for
+  you**: changes by others on tasks assigned to you since you last looked.
+
+All of this is worked out from the files and the event logs each time, so
+nothing extra is stored or synced. It's configured in the project config's
+`[auto_status]` and `[health]` sections; remove them to turn it off.
+`--status` lists the warnings too.
+
 ## Project browser
 
 The project browser is a web page that the app serves from your own computer.
@@ -152,6 +190,12 @@ python main.py --root ~/TUP --serve
   that haven't started are drawn quietly so progress stands out.
 - **Filters:** click statuses in the legend to show only, say, retakes;
   search by name (press `/`).
+- **Warnings:** a solid ring and `!` marks a problem (clash, changed after
+  approval, newer than submitted); a dashed outline and `…` marks a stalled
+  task. **Needs attention** and **Assigned to me** filter the grid.
+- **Activity:** the feed of everything that happened, newest first.
+  Feedback on your tasks you haven't seen is highlighted and counted as
+  **new for you**.
 - **Detail panel:** click a shot or a chip to see its tasks; change the
   status, assignee or add a comment (Ctrl+Enter saves). A comment saved with
   a status change is attached to it, like a Kitsu review comment.

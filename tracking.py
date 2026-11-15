@@ -73,8 +73,16 @@ class TaskState:
 
 @dataclass(frozen=True)
 class Flag:
-    code: str     # changed_after_approval, newer_than_submitted, stalled, conflict
+    code: str     # see FLAG_ORDER
     message: str
+
+
+# Most serious first: things that cause wrong work, then reminders
+FLAG_ORDER = ("conflict", "changed_after_approval", "newer_than_submitted", "stalled")
+
+
+def flag_rank(flag: Flag) -> int:
+    return FLAG_ORDER.index(flag.code) if flag.code in FLAG_ORDER else len(FLAG_ORDER)
 
 
 @dataclass
@@ -201,6 +209,7 @@ def file_events(index: VersionIndex | None) -> list[dict]:
                     "label": version.label,
                     "files": len(version.files),
                     "copies": len(version.copies),
+                    "sequence": version.is_sequence,
                 })
     return events
 
@@ -243,7 +252,8 @@ def build_tracker(project: Project, index: VersionIndex | None = None) -> Tracke
             if event.get("copies"):
                 state.conflicts.append(f"{event['copies'] + 1} files claim {product} {event['label']}")
             tracker.activity.append({**base, "kind": "file", "product": product, "label": event["label"],
-                                     "files": event["files"]})
+                                     "files": event["files"], "sequence": event.get("sequence", False),
+                                     "copies": event.get("copies", 0)})
             _auto_status(project, tracker, state, time, state_for)
         elif event["type"] == "status":
             state.status = str(event.get("status", default)).lower()
@@ -532,6 +542,13 @@ def format_status_grid(tracker: Tracker) -> str:
                 who = f" ({state.assignee})" if state.assignee else ""
                 lines.append(f"  {state.entity} {state.task}{who}  since {local_time(state.updated)}")
 
+    flagged = sorted(tracker.all_flags(),
+                     key=lambda pair: (flag_rank(pair[1]), natural_key(pair[0].entity), pair[0].task))
+    if flagged:
+        lines += ["", "Needs attention:"]
+        for state, flag in flagged:
+            lines.append(f"  {state.entity} {state.task}: {flag.message}")
+
     counts: dict[str, int] = {}
     for entity in tracker.entities:
         for state in tracker.tasks_for(entity.name):
@@ -562,6 +579,8 @@ def format_entity(tracker: Tracker, index: VersionIndex | None, name: str) -> st
         who = f"  assigned: {state.assignee}" if state.assignee else ""
         changed = f"  by {state.updated_by} {local_time(state.updated)}" if state.updated else ""
         lines += ["", f"{state.task}: {label}{who}{changed}"]
+        for flag in tracker.flags(state):
+            lines.append(f"  ! {flag.message}")
 
         products = [p for p in versions.sorted_products() if p.task == state.task] if versions else []
         for product in products:

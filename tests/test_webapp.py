@@ -3,8 +3,10 @@ from __future__ import annotations
 import http.client
 import io
 import json
+import os
 import sys
 import tempfile
+import time
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
@@ -257,6 +259,34 @@ class ApiTests(ServerTestCase):
         status, data = self.json("GET", "/api/overview", auth=False)
         self.assertEqual(status, 403)
         self.assertIn("Open the Project Browser again", data["error"])
+
+    def test_activity_feed(self) -> None:
+        status, data = self.json("GET", "/api/activity")
+        self.assertEqual(status, 200)
+        items = data["items"]
+        times = [item["time"] for item in items]
+        self.assertEqual(times, sorted(times, reverse=True))  # newest first
+        kinds = {item["kind"] for item in items}
+        self.assertTrue({"file", "status"} <= kinds)
+        files = [i for i in items if i["kind"] == "file" and i["entity"] == "SH05" and i["task"] == "layout"]
+        self.assertEqual(sorted(i["label"] for i in files), ["v001", "v002"])
+        status, data = self.json("GET", "/api/activity?limit=abc")
+        self.assertEqual(status, 200)  # bad limit falls back to the default
+
+    def test_flags_in_overview(self) -> None:
+        # SH05 layout was sent for review on v002; v003 arrives afterwards
+        (self.root / "SH05_layout_v003.ma").write_text("x")
+        with redirect_stdout(io.StringIO()):
+            sort_project(self.root, fast_mode=True)
+        later = time.time() + 60
+        moved = next(self.root.rglob("SH05_layout_v003.ma"))
+        os.utime(moved, (later, later))
+        self.json("POST", "/api/rescan", {})
+        _, data = self.json("GET", "/api/overview")
+        sh05 = next(e for e in data["entities"] if e["name"] == "SH05")
+        layout = next(t for t in sh05["tasks"] if t["task"] == "layout")
+        self.assertEqual([f["code"] for f in layout["flags"]], ["newer_than_submitted"])
+        self.assertEqual(layout["decided_on"], {"SH05_layout.ma": 2})
 
     def test_reveal(self) -> None:
         _, data = self.json("GET", "/api/entity?name=SH05")

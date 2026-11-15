@@ -9,10 +9,14 @@ const $ = (id) => document.getElementById(id);
 const state = {
   project: null,
   overview: null,
+  activity: [],
   version: null,
+  view: "grid",        // grid | activity
   entity: null,        // detail JSON of the open shot/asset
   task: null,          // selected task name
   statusFilter: new Set(),
+  mine: false,
+  attention: false,
   formDirty: false,
 };
 
@@ -58,20 +62,31 @@ async function api(path, body) {
 }
 
 const dateFormat = new Intl.DateTimeFormat(undefined, { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+const timeFormat = new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" });
+const dayFormat = new Intl.DateTimeFormat(undefined, { weekday: "long", day: "numeric", month: "long" });
 const formatIso = (iso) => (iso ? dateFormat.format(new Date(iso)) : "");
 const formatMtime = (seconds) => dateFormat.format(new Date(seconds * 1000));
+const me = () => $("user").value.trim();
 
 function statusInfo(code) {
   return state.project.statuses.find((s) => s.code === code)
     || { code, name: `${code} (not in config)`, background: "#555555", text: "#ffffff" };
 }
 
+// Problems cause wrong work (clashes, changes after approval); reminders are just stalled tasks
+const isProblem = (flag) => flag.code !== "stalled";
+
 function chip(code, extra = {}) {
   const info = statusInfo(code);
-  const { tag = "span", who, ...props } = extra;
+  const { tag = "span", flags = [], ...props } = extra;
+  const problem = flags.some(isProblem);
+  const reminder = !problem && flags.length > 0;
   // The default status ("nothing started") is drawn quietly so real progress stands out
-  const node = el(tag, { class: info.default ? "chip quiet" : "chip", title: info.name, ...props },
-    info.code, who ? el("span", { class: "who", text: `· ${who}` }) : null);
+  const classes = ["chip", info.default ? "quiet" : null, problem ? "flagged" : null, reminder ? "reminder" : null]
+    .filter(Boolean).join(" ");
+  const mark = problem ? "!" : reminder ? "…" : null;
+  const node = el(tag, { class: classes, title: info.name, ...props },
+    info.code, mark ? el("span", { class: "mark", "aria-hidden": "true", text: mark }) : null);
   node.style.setProperty("--chip-bg", info.background);
   node.style.setProperty("--chip-fg", info.text);
   return node;
@@ -87,29 +102,66 @@ function toast(message, bad = false) {
   toastTimer = setTimeout(() => { node.hidden = true; }, bad ? 6000 : 2500);
 }
 
-function isDone(code) { return statusInfo(code).done; }
+const isDone = (code) => statusInfo(code).done;
+const problemTasks = () => allTasks().filter(({ task }) => task.flags.some(isProblem));
+const stalledTasks = () => allTasks().filter(({ task }) => task.flags.length && !task.flags.some(isProblem));
+
+// "New for you": changes by other people on tasks assigned to you since you last looked
+const seenKey = () => `pb-seen:${me().toLowerCase()}`;
+const lastSeen = () => localStorage.getItem(seenKey()) || "";
+
+function myTaskKeys() {
+  const user = me().toLowerCase();
+  const keys = new Set();
+  if (!user || !state.overview) return keys;
+  for (const { entity, task } of allTasks()) {
+    if ((task.assignee || "").toLowerCase() === user) keys.add(`${entity.name}/${task.task}`);
+  }
+  return keys;
+}
+
+function forMe(item) {
+  // Changes by others on my tasks. Status moves caused by files are skipped (most
+  // likely my own saves); ones caused by someone's decision count ("3d is ready").
+  return myTaskKeys().has(`${item.entity}/${item.task}`) && item.kind !== "file" && item.user !== "files"
+    && (item.user || "").toLowerCase() !== me().toLowerCase();
+}
+
+function unreadForMe() {
+  const seen = lastSeen();
+  return state.activity.filter((item) => forMe(item) && item.time > seen);
+}
+
+function markSeen() {
+  if (me() && state.activity.length) localStorage.setItem(seenKey(), state.activity[0].time);
+}
 
 // Loading
 async function loadAll({ rescan = false } = {}) {
   try {
     if (rescan) await api("/api/rescan", {});
-    const [project, overview, version] = await Promise.all([
-      api("/api/project"), api("/api/overview"), api("/api/version"),
+    const [project, overview, activity, version] = await Promise.all([
+      api("/api/project"), api("/api/overview"), api("/api/activity"), api("/api/version"),
     ]);
     state.project = project;
     state.overview = overview;
+    state.activity = activity.items;
     state.version = version.version;
     if (!$("user").value) $("user").value = localStorage.getItem("pb-user") || project.user || "";
     document.title = `${project.name} · Project Browser`;
     $("project-name").textContent = project.name;
-    renderLegend();
-    renderSummary();
-    renderGrids();
-    fillPeople();
+    renderAll();
     if (state.entity) await openEntity(state.entity.name, state.task, { keepForm: true });
   } catch (error) {
     setChildren($("main"), el("div", { class: "error", text: error.message }));
   }
+}
+
+function renderAll() {
+  renderToolbar();
+  renderSummary();
+  renderMain();
+  fillPeople();
 }
 
 function setOffline(message) {
@@ -130,7 +182,7 @@ async function poll() {
   setTimeout(poll, POLL_MS);
 }
 
-// Summary & legend
+// Summary & toolbar
 function allTasks() {
   return state.overview.entities.flatMap((e) => e.tasks.map((t) => ({ entity: e, task: t })));
 }
@@ -140,22 +192,50 @@ function renderSummary() {
   const done = tasks.filter(({ task }) => isDone(task.status)).length;
   const waiting = tasks.filter(({ task }) => statusInfo(task.status).feedback_request).length;
   const retakes = tasks.filter(({ task }) => statusInfo(task.status).retake).length;
+  const attention = problemTasks().length;
+  const stalled = stalledTasks().length;
+  const unread = unreadForMe().length;
   const pct = tasks.length ? Math.round((100 * done) / tasks.length) : 0;
   const parts = [
     el("span", {}, el("b", { text: `${done}/${tasks.length}` }), ` tasks done (${pct}%)`),
     el("span", {}, el("b", { text: waiting }), " waiting for review"),
     el("span", {}, el("b", { text: retakes }), retakes === 1 ? " retake" : " retakes"),
   ];
+  if (attention) {
+    parts.push(el("span", { class: "attention" }, el("button", {
+      class: "linkish", type: "button", title: "Show only tasks with a warning",
+      onclick: () => { state.attention = true; setView("grid"); },
+    }, el("b", { text: attention }), attention === 1 ? " needs attention" : " need attention")));
+  }
+  if (stalled) {
+    parts.push(el("span", { class: "stalled" }, el("button", {
+      class: "linkish", type: "button", title: "Active tasks with no new file or update for a while",
+      onclick: () => { state.attention = true; setView("grid"); },
+    }, el("b", { text: stalled }), " stalled")));
+  }
+  if (unread) {
+    parts.push(el("span", { class: "unread" }, el("button", {
+      class: "linkish", type: "button", title: "Changes by others on tasks assigned to you",
+      onclick: () => { state.mine = true; setView("activity"); },
+    }, el("b", { text: unread }), " new for you")));
+  }
   if (state.overview.unsorted) {
     parts.push(el("span", {}, el("b", { text: state.overview.unsorted }), " files not sorted yet"));
   }
   setChildren($("summary"), ...parts);
 }
 
-function renderLegend() {
+function renderToolbar() {
+  $("view-grid").setAttribute("aria-selected", String(state.view === "grid"));
+  $("view-activity").setAttribute("aria-selected", String(state.view === "activity"));
+  $("toggle-mine").setAttribute("aria-pressed", String(state.mine));
+  $("toggle-attention").setAttribute("aria-pressed", String(state.attention));
+  $("toggle-attention").hidden = state.view !== "grid";
+
   const counts = {};
   for (const { task } of allTasks()) counts[task.status] = (counts[task.status] || 0) + 1;
   const legend = $("legend");
+  legend.hidden = state.view !== "grid";
   legend.classList.toggle("filtering", state.statusFilter.size > 0);
   setChildren(legend,
     el("span", { class: "hint", text: "Show:" }),
@@ -167,8 +247,8 @@ function renderLegend() {
         onclick: () => {
           if (state.statusFilter.has(s.code)) state.statusFilter.delete(s.code);
           else state.statusFilter.add(s.code);
-          renderLegend();
-          renderGrids();
+          renderToolbar();
+          renderMain();
         },
       });
       node.title = `${s.name}: show only shots and assets with this status`;
@@ -176,17 +256,32 @@ function renderLegend() {
       return node;
     }),
     state.statusFilter.size
-      ? el("button", { class: "link-button", type: "button", text: "Show all", onclick: () => { state.statusFilter.clear(); renderLegend(); renderGrids(); } })
+      ? el("button", { class: "link-button", type: "button", text: "Show all", onclick: () => { state.statusFilter.clear(); renderToolbar(); renderMain(); } })
       : null,
   );
+}
+
+function setView(view) {
+  state.view = view;
+  renderToolbar();
+  renderSummary();
+  renderMain();
+}
+
+function renderMain() {
+  if (state.view === "activity") renderActivity();
+  else renderGrids();
 }
 
 // Grids
 function visibleEntities() {
   const text = $("filter").value.trim().toLowerCase();
+  const user = me().toLowerCase();
   return state.overview.entities.filter((entity) => {
     if (text && !entity.name.toLowerCase().includes(text)) return false;
     if (state.statusFilter.size && !entity.tasks.some((t) => state.statusFilter.has(t.status))) return false;
+    if (state.mine && !entity.tasks.some((t) => (t.assignee || "").toLowerCase() === user)) return false;
+    if (state.attention && !entity.tasks.some((t) => t.flags.length)) return false;
     return true;
   });
 }
@@ -210,7 +305,8 @@ function renderGrids() {
   const main = $("main");
   const entities = visibleEntities();
   if (!entities.length) {
-    setChildren(main, el("p", { class: "empty", text: "Nothing matches. Clear the search or status filter." }));
+    const why = state.mine && !me() ? "Enter your name in the “You” box to see your tasks." : "Nothing matches. Clear the search or filters.";
+    setChildren(main, el("p", { class: "empty", text: why }));
     return;
   }
 
@@ -239,12 +335,13 @@ function renderGrids() {
           const task = byTask[column];
           if (!task) return el("td", {});
           const info = statusInfo(task.status);
-          const label = `${entity.name} ${column}: ${info.name}`
-            + (task.assignee ? `, assigned to ${task.assignee}` : "")
-            + (task.latest ? `, latest ${task.latest}` : "");
+          const label = [`${entity.name} ${column}: ${info.name}`,
+            task.assignee ? `assigned to ${task.assignee}` : null,
+            task.latest ? `latest ${task.latest}` : null,
+            ...task.flags.map((f) => `⚠ ${f.message}`)].filter(Boolean).join("\n");
           return el("td", {}, chip(task.status, {
-            tag: "button", type: "button", title: label, "aria-label": label,
-            onclick: () => openEntity(entity.name, column),
+            tag: "button", type: "button", title: label, "aria-label": label.replace(/\n/g, ", "),
+            flags: task.flags, onclick: () => openEntity(entity.name, column),
           }));
         })));
     }
@@ -261,6 +358,73 @@ function renderGrids() {
 
   setChildren(main, ...groups.filter(Boolean),
     ...state.overview.warnings.map((w) => el("p", { class: "warning", text: w })));
+}
+
+// Activity feed
+const ICONS = { file: "⬆", status: "●", note: "✎", assign: "→" };
+
+function activitySentence(item) {
+  const target = el("button", {
+    class: "target", type: "button", text: `${item.entity} ${item.task}`,
+    onclick: () => openEntity(item.entity, item.task),
+  });
+  if (item.kind === "file") {
+    const frames = item.sequence && item.files > 1 ? ` (${item.files} frames)` : "";
+    const parts = [el("span", {}, target, ` · ${item.label} of ${item.product} saved${frames}`)];
+    if (item.copies) {
+      parts.push(el("div", { class: "alert inline", text: `⚠ ${item.copies + 1} files claim ${item.label}: two people may have saved the same version` }));
+    }
+    return parts;
+  }
+  if (item.kind === "status") {
+    const who = item.auto ? (item.user === "files" ? "New file moved " : "Automation moved ") : `${item.user} set `;
+    const parts = [el("span", {}, `${who}`, target, " to ", chip(item.status))];
+    if (item.note) parts.push(el("blockquote", { text: item.note }));
+    return parts;
+  }
+  if (item.kind === "note") {
+    return [el("span", {}, `${item.user} commented on `, target), el("blockquote", { text: item.note })];
+  }
+  if (item.kind === "assign") {
+    return [el("span", {}, `${item.user} ${item.assignee ? `assigned ${item.assignee} to ` : "unassigned "}`, target)];
+  }
+  return [el("span", {}, target)];
+}
+
+function renderActivity() {
+  const main = $("main");
+  const text = $("filter").value.trim().toLowerCase();
+  const seen = lastSeen();
+  const items = state.activity.filter((item) => {
+    if (text && !`${item.entity} ${item.task}`.toLowerCase().includes(text)) return false;
+    if (state.mine && !forMe(item)) return false;
+    return true;
+  });
+  if (!items.length) {
+    const why = state.mine
+      ? (me() ? "Nothing yet from others on tasks assigned to you." : "Enter your name in the “You” box to see changes on your tasks.")
+      : "No activity yet. Files saved into the project and status changes appear here.";
+    setChildren(main, el("p", { class: "empty", text: why }));
+    return;
+  }
+
+  const days = [];
+  for (const item of items) {
+    const day = dayFormat.format(new Date(item.time));
+    if (!days.length || days[days.length - 1].day !== day) days.push({ day, items: [] });
+    days[days.length - 1].items.push(item);
+  }
+  setChildren(main, el("div", { class: "feed" }, ...days.map(({ day, items: dayItems }) => [
+    el("h2", { text: day }),
+    el("ol", {}, ...dayItems.map((item) => el("li", { class: forMe(item) && item.time > seen ? "unread" : null },
+      el("span", { class: "when", text: timeFormat.format(new Date(item.time)) }),
+      el("span", { class: "icon", "aria-hidden": "true", text: ICONS[item.kind] || "·" }),
+      el("div", { class: "what" }, ...activitySentence(item))))),
+  ])));
+  if (state.mine) {
+    markSeen();
+    renderSummary();
+  }
 }
 
 // Detail panel
@@ -285,13 +449,12 @@ function closePanel() {
   $("panel").hidden = true;
   document.body.classList.remove("panel-open");
   history.replaceState(null, "", location.pathname);
-  renderGrids();
+  renderMain();
 }
 
 function renderPanel({ keepForm = false } = {}) {
   const entity = state.entity;
-  const panel = $("panel");
-  panel.hidden = false;
+  $("panel").hidden = false;
   document.body.classList.add("panel-open");
   $("panel-title").textContent = entity.name;
   $("panel-context").textContent = [entity.type, entity.context].filter(Boolean).join(" · ");
@@ -302,13 +465,15 @@ function renderPanel({ keepForm = false } = {}) {
   setChildren($("task-tabs"), ...entity.tasks.map((t) => el("button", {
     class: "task-tab", type: "button", role: "tab", "aria-selected": String(t.task === state.task),
     onclick: () => { state.task = t.task; state.formDirty = false; renderPanel(); },
-  }, el("span", { class: "name", text: t.task }), chip(t.status))));
+  }, el("span", { class: "name", text: t.task }), chip(t.status, { flags: t.flags }))));
 
   const task = entity.tasks.find((t) => t.task === state.task);
+  setChildren($("task-alerts"), ...(task ? task.flags : []).map((f) => el("div", { class: isProblem(f) ? "alert" : "alert reminder" },
+    el("b", { text: isProblem(f) ? "⚠ " : "… " }), f.message)));
   renderForm(task, keepForm);
   renderVersions(entity, task);
   renderNotes(task);
-  renderGrids();
+  if (state.view === "grid") renderGrids();
 }
 
 function renderForm(task, keepForm) {
@@ -325,6 +490,14 @@ function renderForm(task, keepForm) {
   }
 }
 
+function decisionWord(task) {
+  const info = statusInfo(task.status);
+  if (info.done) return "approved";
+  if (info.feedback_request) return "sent for review";
+  if (info.retake) return "retake on this";
+  return "last decision";
+}
+
 function renderVersions(entity, task) {
   const products = entity.products.filter((p) => (task ? p.task === task.task : true));
   const box = $("versions");
@@ -334,7 +507,7 @@ function renderVersions(entity, task) {
   }
   setChildren(box, ...products.map((product) => el("div", { class: "product" },
     el("h4", { text: product.name }),
-    ...product.versions.map((v) => {
+    ...product.versions.map((v, index) => {
       let preview;
       if (v.media && v.media.kind === "image") {
         preview = el("button", { class: "preview", type: "button", "aria-label": `View ${v.label}`, onclick: () => openViewer(product.name, v) },
@@ -344,11 +517,14 @@ function renderVersions(entity, task) {
       } else {
         preview = el("span", { class: "preview none", text: "no preview", title: "Browsers can't display this file type" });
       }
+      const decided = task && task.decided_on && v.number !== null && task.decided_on[product.name] === v.number;
       const meta = [formatMtime(v.modified), v.sequence ? `${v.files} frames` : null].filter(Boolean).join(" · ");
       return el("div", { class: "version-row" },
         preview,
-        el("span", { class: "label", text: v.label }),
-        el("span", { class: "meta", text: meta }),
+        el("span", { class: "label" }, v.label),
+        el("span", { class: "meta" }, meta,
+          index === 0 ? el("span", { class: "badge latest", text: "latest" }) : null,
+          decided ? el("span", { class: "badge", text: decisionWord(task) }) : null),
         el("button", { class: "link-button", type: "button", text: "Show in folder", onclick: () => reveal(v.path) }));
     }))));
 }
@@ -367,16 +543,14 @@ function renderNotes(task) {
 function fillPeople() {
   const people = new Set();
   for (const { task } of allTasks()) if (task.assignee) people.add(task.assignee);
-  const me = $("user").value.trim();
-  if (me) people.add(me);
+  if (me()) people.add(me());
   setChildren($("people"), ...[...people].sort().map((p) => el("option", { value: p })));
 }
 
 // Actions
 async function saveTask(event) {
   event.preventDefault();
-  const user = $("user").value.trim();
-  if (!user) {
+  if (!me()) {
     toast("Enter your name in the “You” box first.", true);
     $("user").focus();
     return;
@@ -387,14 +561,13 @@ async function saveTask(event) {
     const result = await api("/api/task", {
       entity: state.entity.name,
       task: state.task,
-      user,
+      user: me(),
       status: $("form-status").value,
       assignee: $("form-assignee").value,
       comment: $("form-comment").value,
     });
     state.formDirty = false;
     toast(result.saved ? `Saved ${state.entity.name} ${state.task}` : "Nothing changed");
-    state.version = null; // refresh the grid on the next poll
     await loadAll();
   } catch (error) {
     toast(error.message, true);
@@ -426,10 +599,6 @@ function openViewer(name, version) {
   $("viewer").showModal();
 }
 
-function closeViewer() {
-  $("viewer").close();
-}
-
 // Wiring
 $("refresh").addEventListener("click", async () => {
   $("refresh").disabled = true;
@@ -437,19 +606,26 @@ $("refresh").addEventListener("click", async () => {
   $("refresh").disabled = false;
   toast("Rescanned the project folder");
 });
-$("filter").addEventListener("input", renderGrids);
-$("user").addEventListener("change", () => { localStorage.setItem("pb-user", $("user").value.trim()); fillPeople(); });
+$("filter").addEventListener("input", renderMain);
+$("user").addEventListener("change", () => {
+  localStorage.setItem("pb-user", me());
+  renderAll();
+});
+$("view-grid").addEventListener("click", () => setView("grid"));
+$("view-activity").addEventListener("click", () => setView("activity"));
+$("toggle-mine").addEventListener("click", () => { state.mine = !state.mine; renderToolbar(); renderMain(); });
+$("toggle-attention").addEventListener("click", () => { state.attention = !state.attention; renderToolbar(); renderMain(); });
 $("panel-close").addEventListener("click", closePanel);
 $("task-form").addEventListener("submit", saveTask);
 $("task-form").addEventListener("input", () => { state.formDirty = true; });
 $("form-comment").addEventListener("keydown", (event) => {
   if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) $("task-form").requestSubmit();
 });
-$("viewer-close").addEventListener("click", closeViewer);
+$("viewer-close").addEventListener("click", () => $("viewer").close());
 $("viewer").addEventListener("close", () => setChildren($("viewer-body")));
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && !$("viewer").open && !$("panel").hidden) closePanel();
-  if (event.key === "/" && document.activeElement.tagName !== "INPUT" && document.activeElement.tagName !== "TEXTAREA") {
+  if (event.key === "/" && !["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement.tagName)) {
     event.preventDefault();
     $("filter").focus();
   }
@@ -458,7 +634,11 @@ document.addEventListener("keydown", (event) => {
 // Start
 (async () => {
   await loadAll();
-  const [name, task] = location.hash.slice(1).split("/").map(decodeURIComponent);
-  if (name && state.overview) await openEntity(name, task || null);
+  if (location.hash === "#activity") {
+    setView("activity");
+  } else {
+    const [name, task] = location.hash.slice(1).split("/").map(decodeURIComponent);
+    if (name && state.overview) await openEntity(name, task || null);
+  }
   setTimeout(poll, POLL_MS);
 })();

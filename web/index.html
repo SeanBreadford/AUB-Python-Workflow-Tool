@@ -27,7 +27,19 @@
 
   <div id="offline" class="offline" role="alert" hidden></div>
 
-  <nav id="legend" class="legend" aria-label="Show only tasks with these statuses"></nav>
+  <div class="toolbar">
+    <div class="segmented" role="tablist" aria-label="View">
+      <button id="view-grid" type="button" role="tab" aria-selected="true">Grid</button>
+      <button id="view-activity" type="button" role="tab" aria-selected="false">Activity</button>
+    </div>
+    <nav id="legend" class="legend" aria-label="Show only tasks with these statuses"></nav>
+    <div class="toggles">
+      <button id="toggle-mine" class="toggle" type="button" aria-pressed="false"
+              title="Only shots and assets with a task assigned to you">Assigned to me</button>
+      <button id="toggle-attention" class="toggle" type="button" aria-pressed="false"
+              title="Only tasks with a warning: changed after approval, version clash, stalled…">Needs attention</button>
+    </div>
+  </div>
 
   <main id="main">
     <p class="empty">Loading…</p>
@@ -44,6 +56,7 @@
     </header>
 
     <div id="task-tabs" class="task-tabs" role="tablist" aria-label="Tasks"></div>
+    <div id="task-alerts" class="alerts" role="status"></div>
 
     <section class="panel-section" aria-labelledby="form-title">
       <h3 id="form-title">Update</h3>

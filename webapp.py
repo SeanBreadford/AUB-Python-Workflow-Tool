@@ -27,7 +27,9 @@ from tracking import (
     build_tracker,
     current_user,
     events_stamp,
+    flag_rank,
     status_colors,
+    task_flags,
     update_task,
 )
 from versions import VersionIndex, scan_versions
@@ -176,7 +178,7 @@ def _thumbnail(index: VersionIndex, project: Project, entity: str) -> str | None
     return _media_entry(best[1], project)["url"] if best else None
 
 
-def _task_json(state, index: VersionIndex) -> dict:
+def _task_json(project: Project, state, index: VersionIndex) -> dict:
     found = index.find(state.entity)
     latest = None
     if found:
@@ -189,7 +191,11 @@ def _task_json(state, index: VersionIndex) -> dict:
         "assignee": state.assignee,
         "updated": state.updated,
         "updated_by": state.updated_by,
+        "last_activity": state.last_activity,
         "latest": latest,
+        "decided_on": state.decided_on,
+        "flags": [{"code": f.code, "message": f.message}
+                  for f in sorted(task_flags(project, state), key=flag_rank)],
         "notes": [{"time": n.time, "user": n.user, "text": n.text, "status": n.status} for n in state.notes],
     }
 
@@ -216,7 +222,7 @@ def overview_json(project: Project, index: VersionIndex, tracker: Tracker) -> di
         act = sequence = None
         if entity.context:
             act, sequence, *_ = [part.strip() for part in entity.context.split("/")]
-        tasks = [_task_json(s, index) for s in tracker.tasks_for(entity.name)]
+        tasks = [_task_json(project, s, index) for s in tracker.tasks_for(entity.name)]
         for task in tasks:
             task.pop("notes")
         entities.append({
@@ -235,6 +241,11 @@ def overview_json(project: Project, index: VersionIndex, tracker: Tracker) -> di
     }
 
 
+def activity_json(tracker: Tracker, limit: int = 300) -> list[dict]:
+    """Newest first: files arriving, status changes, notes and assignments."""
+    return list(reversed(tracker.activity[-limit:])) if limit > 0 else []
+
+
 def entity_json(project: Project, index: VersionIndex, tracker: Tracker, name: str) -> dict | None:
     entity = tracker.find(name)
     if entity is None:
@@ -243,7 +254,7 @@ def entity_json(project: Project, index: VersionIndex, tracker: Tracker, name: s
         "name": entity.name,
         "type": entity.entity_type,
         "context": entity.context,
-        "tasks": [_task_json(s, index) for s in tracker.tasks_for(entity.name)],
+        "tasks": [_task_json(project, s, index) for s in tracker.tasks_for(entity.name)],
         "products": _versions_for(index, project, entity.name),
         "thumbnail": _thumbnail(index, project, entity.name),
     }
@@ -476,6 +487,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(project_json(project))
         if route == "overview":
             return self._json(overview_json(project, index, tracker))
+        if route == "activity":
+            raw = query.get("limit", ["300"])[0]
+            limit = min(int(raw), 2000) if raw.isdigit() else 300
+            return self._json({"items": activity_json(tracker, limit)})
         if route == "entity":
             name = query.get("name", [""])[0]
             data = entity_json(project, index, tracker, name)
