@@ -3,10 +3,11 @@ from __future__ import annotations
 import threading
 import time
 from pathlib import Path
-from typing import Iterable, Set
+from typing import Set
 
 from config import DEBOUNCE_SECONDS
 from filesystem import sort_project
+from project import ProjectConfigError, ProjectNotFoundError, load_project
 
 try:
     from watchdog.events import FileSystemEventHandler
@@ -93,13 +94,19 @@ class DebouncedHandler(FileSystemEventHandler):  # type: ignore[misc]
             if not existing_files:
                 continue
 
-            sort_project(
-                root=self.root,
-                dry_run=self.dry_run,
-                quiet=self.quiet,
-                files=existing_files,
-                fast_mode=self.fast_mode,
-            )
+            # The config is reloaded each time, so edits apply without a restart.
+            # A broken edit must not kill this thread: report it and keep watching.
+            try:
+                sort_project(
+                    root=self.root,
+                    dry_run=self.dry_run,
+                    quiet=self.quiet,
+                    files=existing_files,
+                    fast_mode=self.fast_mode,
+                )
+            except (ProjectNotFoundError, ProjectConfigError) as error:
+                print(f"ERROR (project config): {error}")
+                print("Skipped these changes; fix the config and they will be picked up next time.")
 
     # Stop Hook
     def stop(self) -> None:
@@ -121,6 +128,7 @@ def watch_project(
     root = Path(root).expanduser().resolve()
     if not root.exists():
         raise FileNotFoundError(f"Root does not exist: {root}")
+    load_project(root)  # fail fast if the config is missing or invalid
 
     handler = DebouncedHandler(
         root=root,

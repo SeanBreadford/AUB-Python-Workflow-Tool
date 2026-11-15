@@ -10,6 +10,7 @@ from tkinter import filedialog, messagebox, ttk
 
 from config import DEFAULT_BATCH_SIZE, ROOT
 from filesystem import set_operation_callback, sort_project, sort_project_batch
+from project import ProjectConfigError, ProjectNotFoundError, init_project, load_project
 
 try:
     from watcher import DebouncedHandler, Observer
@@ -367,6 +368,32 @@ class FileSorterGUI:
         # Called from worker threads: queue it for the Tk thread to apply
         self.op_queue.put(operation)
 
+    # Project Check
+    def _ensure_project(self, root: Path) -> bool:
+        """True if root has a valid project config; offers to create one if not."""
+        try:
+            project = load_project(root)
+        except ProjectConfigError as error:
+            messagebox.showerror("Project config error", str(error))
+            return False
+        except ProjectNotFoundError:
+            create = messagebox.askyesno(
+                "No project config",
+                f"This folder isn't set up as a project yet:\n{root}\n\n"
+                "Create the default project config here?",
+            )
+            if create:
+                path = init_project(root)
+                self.log_queue.put(f"Created project config: {path}")
+                messagebox.showinfo(
+                    "Project created",
+                    f"Review the rules in:\n{path}\n\nThen run again, ideally with Dry Run first.",
+                )
+            return False
+
+        self.root.title(f"Production File Organiser - {project.name}")
+        return True
+
     # Sort Actions
     def start_sort(self) -> None:
         if self.processing:
@@ -376,6 +403,8 @@ class FileSorterGUI:
         root = Path(self.root_var.get()).expanduser().resolve()
         if not root.exists():
             messagebox.showerror("Invalid root", f"Folder does not exist:\n{root}")
+            return
+        if not self._ensure_project(root):
             return
 
         try:
@@ -454,6 +483,8 @@ class FileSorterGUI:
             return
 
         if self.watching:
+            return
+        if not self._ensure_project(root):
             return
 
         self._reset_stats()

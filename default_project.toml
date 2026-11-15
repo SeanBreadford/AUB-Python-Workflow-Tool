@@ -1,0 +1,238 @@
+# Project config for the TUP File Sorter.
+#
+# Lives at <project root>/_pipeline/project.toml. The sorter refuses to run on
+# a folder without one, so it can never sort the wrong folder by accident.
+# Create one with:  python main.py --root /path/to/project --init
+
+[project]
+name = "The Ugly Princess"
+code = "TUP"
+# Production folder, relative to the project root ("." if there isn't one).
+production = "production"
+
+
+[ignore]
+# Folders (any depth) whose contents are never touched. Case-insensitive.
+dirs = [
+    ".git", "__pycache__", ".idea", ".vscode", ".vs", ".history", "node_modules",
+    ".pytest_cache", ".mypy_cache", ".ruff_cache",
+    "temp", "tmp", "cache", "backup", "backups", "archive", "old",
+    "autosave", "render_temp",
+]
+# Files whose name contains any of these are skipped (temp and sync files).
+name_parts = [
+    ".tmp", ".part", ".partial", ".download", ".crdownload", ".onedrive",
+    ".tmp.drivedownload", ".sync", ".cloud", ".onecache", ".!sync",
+    ".autosave", ".bkp", ".backup", ".ds_store", "thumbs.db", "desktop.ini",
+]
+# Files and folders starting with these are skipped. Keep "_": it is the
+# team's "do not sort" marker.
+prefixes = [".", "~", "_"]
+
+
+# Named extension lists. Rules can use a group name in `ext` instead of
+# listing extensions.
+[file_groups]
+model = [".ma", ".mb", ".fbx", ".obj", ".blend"]
+texture = [".png", ".jpg", ".jpeg", ".tif", ".tiff", ".exr", ".tga"]
+image = [".png", ".jpg", ".jpeg", ".tif", ".tiff", ".exr", ".tga"]
+video = [".mov", ".mp4", ".avi", ".mkv"]
+audio = [".mp3", ".wav", ".aif", ".aiff"]
+edit_session = [".sesx", ".prproj", ".fcpxml", ".logicx", ".band", ".ptx"]
+comp = [".aep", ".aepx", ".nk", ".nknc"]
+
+
+# Shot structure. Any rule whose pattern captures a `shot` field can use
+# {shot_dir}, {act}, {sequence} and {scene} in its dest.
+[shots]
+# Folder for shots listed in the ranges below.
+dir = "{production}/Acts/{act}/{sequence}/{scene}/{shot}"
+# Folder for shots that aren't in any range (act/sequence/scene are "unassigned").
+unmapped_dir = "{production}/shots/{shot}"
+shot_format = "SH{num:02d}"
+scene_format = "SC_{num:02d}"
+
+# Each shot in a range gets its own scene, numbered from 1 within the range.
+# `first` and `last` are inclusive shot numbers.
+[[shots.ranges]]
+act = "Act_1"
+sequence = "SQ_01"
+first = 1
+last = 19
+
+[[shots.ranges]]
+act = "Act_2"
+sequence = "SQ_02"
+first = 20
+last = 27
+
+[[shots.ranges]]
+act = "Act_2"
+sequence = "SQ_03"
+first = 28
+last = 36
+
+[[shots.ranges]]
+act = "Act_3"
+sequence = "SQ_04"
+first = 37
+last = 42
+
+[[shots.ranges]]
+act = "Act_3"
+sequence = "SQ_05"
+first = 43
+last = 54
+
+
+# Routing rules, checked top to bottom. The first match wins.
+#
+# A rule matches when all of its conditions hold (matching ignores case):
+#   pattern   regex matched from the start of the filename. Named groups,
+#             like (?P<asset>...), become fields usable in dest.
+#   ext       extensions (".ma") and/or file group names ("model")
+#   contains  the filename contains at least one of these
+#
+# dest is the destination folder, relative to the project root. Fields go in
+# braces: {production}, any named group, and the shot fields above.
+#
+# A rule can have [[rules.cases]]: sub-rules checked in order, each with its
+# own conditions. A case's dest is relative to the rule's dest, and a case
+# without conditions catches everything else. If no case matches, the next
+# rule is tried.
+#
+# Existing folders are reused even if their case differs (prop_oillamp vs
+# prop_OilLamp), so a typo in case never splits an asset in two.
+
+[[rules]]
+name = "Shot render frames"
+pattern = '(?P<shot>sh\d{2,3})_.*[_\-]\d{4,6}\.(png|tga|exr|jpg|jpeg|tif|tiff)$'
+dest = "{shot_dir}/renders"
+
+[[rules]]
+name = "Render frames without a shot"
+pattern = 'sh\d{2,3}.*[_\-]\d{4,6}\.(png|tga|exr|jpg|jpeg|tif|tiff)$'
+dest = "{production}/shots/renders"
+
+[[rules]]
+name = "Reference video"
+pattern = '(ref|reference)_'
+ext = [".mov", ".mp4", ".avi"]
+dest = "reference"
+
+[[rules]]
+name = "Editing sessions"
+ext = ["edit_session"]
+dest = "editing/sessions"
+
+[[rules]]
+name = "Music"
+pattern = 'music_'
+ext = ["audio"]
+dest = "editing/audio"
+
+[[rules]]
+name = "Concept art"
+pattern = 'concept_'
+dest = "concept_art"
+    [[rules.cases]]
+    pattern = 'concept_char_'
+    dest = "characters"
+    [[rules.cases]]
+    pattern = 'concept_env_'
+    dest = "locations"
+    [[rules.cases]]
+    pattern = 'concept_prop_'
+    dest = "props"
+    [[rules.cases]]
+    pattern = 'concept_fx_'
+    dest = "fx"
+    [[rules.cases]]
+    dest = "misc"
+
+[[rules]]
+name = "2D FX tests"
+pattern = 'animfx_test_'
+ext = [".mov"]
+dest = "concept_art/Anim/2D/fx"
+
+[[rules]]
+name = "2D character tests"
+pattern = 'animchar_test_'
+ext = [".mov"]
+dest = "concept_art/Anim/2D/char"
+
+[[rules]]
+name = "Characters"
+pattern = 'char_(?P<asset>[^_.]+)'
+dest = "{production}/assets/3d/char/char_{asset}"
+    [[rules.cases]]
+    ext = ["model"]
+    dest = "model"
+    [[rules.cases]]
+    ext = ["texture"]
+    dest = "textures"
+    [[rules.cases]]
+
+[[rules]]
+name = "Props"
+pattern = 'prop_(?P<asset>[^_.]+)'
+dest = "{production}/assets/3d/props/prop_{asset}"
+    [[rules.cases]]
+    ext = ["model"]
+    dest = "model"
+    [[rules.cases]]
+    ext = ["texture"]
+    dest = "textures"
+    [[rules.cases]]
+
+[[rules]]
+name = "Environments"
+pattern = 'env_(?P<asset>[^_.]+)'
+dest = "{production}/assets/3d/env/env_{asset}"
+    [[rules.cases]]
+    ext = ["model"]
+    dest = "model"
+    [[rules.cases]]
+    ext = ["texture"]
+    dest = "textures"
+    [[rules.cases]]
+
+[[rules]]
+name = "Shot files"
+pattern = '(?P<shot>sh\d{2,3})_'
+dest = "{shot_dir}"
+    [[rules.cases]]
+    contains = ["layout"]
+    dest = "layout"
+    [[rules.cases]]
+    ext = [".ma"]
+    dest = "layout"
+    [[rules.cases]]
+    ext = [".blend", ".fbx", ".obj", ".mb"]
+    dest = "3d"
+    [[rules.cases]]
+    ext = [".xstage", ".psd", ".png"]
+    contains = ["anim"]
+    dest = "2d"
+    [[rules.cases]]
+    contains = ["fx2d", "fx3d"]
+    dest = "fx"
+    [[rules.cases]]
+    ext = ["comp"]
+    dest = "comp"
+    [[rules.cases]]
+    ext = ["image"]
+    dest = "renders"
+    [[rules.cases]]
+    contains = ["render"]
+    dest = "renders"
+    [[rules.cases]]
+
+
+# Files that match no rule.
+[fallback]
+dest = "incoming"
+# Unmatched files are only moved out of these folders ("." is the project
+# root). Unmatched files anywhere else are left where someone put them.
+from = ["."]

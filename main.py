@@ -5,6 +5,7 @@ from pathlib import Path
 
 from config import DEFAULT_BATCH_SIZE, ROOT
 from filesystem import sort_project, sort_project_batch
+from project import ProjectConfigError, ProjectNotFoundError, init_project, load_project
 
 try:
     from watcher import watch_project
@@ -57,6 +58,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Open GUI",
     )
     parser.add_argument(
+        "--init",
+        action="store_true",
+        help="Create a default project config (_pipeline/project.toml) in --root",
+    )
+    parser.add_argument(
         "--fast-mode",
         action="store_true",
         help="Skip full stability checks (useful in watch mode)",
@@ -76,6 +82,23 @@ def main() -> None:
         return
 
     root = Path(args.root).expanduser().resolve()
+
+    if args.init:
+        try:
+            path = init_project(root)
+        except (FileExistsError, FileNotFoundError) as error:
+            raise SystemExit(str(error))
+        print(f"Created project config: {path}")
+        print("Review the rules in it, then preview with --dry-run.")
+        return
+
+    # Fail early with a clear message instead of sorting an unconfigured folder
+    try:
+        project = load_project(root)
+    except (ProjectNotFoundError, ProjectConfigError) as error:
+        raise SystemExit(f"Error: {error}")
+    if not args.quiet:
+        print(f"Project: {project.name} ({project.config_path})")
 
     if args.watch:
         if not WATCH_AVAILABLE:

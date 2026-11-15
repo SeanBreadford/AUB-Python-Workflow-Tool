@@ -5,7 +5,7 @@ a = Analysis(
     ['app.py'],
     pathex=[],
     binaries=[],
-    datas=[],
+    datas=[('default_project.toml', '.')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},

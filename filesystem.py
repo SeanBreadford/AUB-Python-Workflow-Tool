@@ -6,13 +6,13 @@ from pathlib import Path
 from typing import Callable, Iterable, Optional
 
 from config import (
-    IGNORE_DIRS,
-    IGNORED_NAME_PARTS,
-    IGNORED_PREFIXES,
+    CONFIG_DIR_NAME,
+    INTER_BATCH_DELAY,
     STABILITY_RETRIES,
     STABILITY_RETRY_DELAY,
     STABILITY_SAMPLE_DELAY,
 )
+from project import Project, load_project
 from rules import choose_destination
 
 # Callback Config
@@ -36,25 +36,23 @@ def log(message: str, quiet: bool = False) -> None:
 
 
 # Safety Helpers
-def is_ignored_file(path: Path) -> bool:
+def is_ignored_file(path: Path, project: Project) -> bool:
     lower_name = path.name.lower()
-    if lower_name.startswith(IGNORED_PREFIXES):
+    if path.name.startswith(project.ignore_prefixes):
         return True
-    return any(part.lower() in lower_name for part in IGNORED_NAME_PARTS)
+    return any(part in lower_name for part in project.ignore_name_parts)
 
 
-def is_in_ignored_dir(path: Path, root: Path) -> bool:
+def is_in_ignored_dir(path: Path, project: Project) -> bool:
     try:
-        rel_parts = path.resolve().relative_to(root.resolve()).parts
-    except Exception:
-        rel_parts = path.parts
+        rel_parts = path.resolve().relative_to(project.root).parts[:-1]
+    except ValueError:
+        rel_parts = path.parent.parts
 
-    ignore_lower = {name.lower() for name in IGNORE_DIRS}
     for part in rel_parts:
-        part_lower = part.lower()
-        if part_lower in ignore_lower:
+        if part == CONFIG_DIR_NAME or part.lower() in project.ignore_dirs:
             return True
-        if part.startswith("_"):
+        if part.startswith(project.ignore_prefixes):
             return True
     return False
 
@@ -105,12 +103,12 @@ def resolve_collision(dest: Path) -> Path:
 
 
 # File Iteration
-def iter_files(root: Path) -> Iterable[Path]:
+def iter_files(root: Path, project: Project) -> Iterable[Path]:
     root = root.resolve()
     for path in root.rglob("*"):
         if not path.is_file():
             continue
-        if is_in_ignored_dir(path, root):
+        if is_in_ignored_dir(path, project):
             continue
         yield path
 
@@ -135,38 +133,50 @@ def robust_move(src: Path, dest: Path, retries: int = 3) -> bool:
 
 
 # Core Processing
+def _rel(path: Path, project: Project) -> Path:
+    try:
+        return path.relative_to(project.root)
+    except ValueError:
+        return path
+
+
+def _already_sorted(src: Path, dest: Path) -> bool:
+    # samefile also catches case-only differences on Windows and macOS
+    if dest.exists():
+        try:
+            return src.samefile(dest)
+        except OSError:
+            return False
+    return src.resolve() == dest.resolve(strict=False)
+
+
 def process_file(
     src: Path,
-    root: Path,
+    project: Project,
     dry_run: bool,
     quiet: bool,
     fast_mode: bool = False,
 ) -> None:
-    root = root.resolve()
-
     try:
-        rel = src.resolve().relative_to(root)
+        rel = src.resolve().relative_to(project.root)
     except ValueError:
-        log(f"SKIP (outside root): {src}", quiet)
+        log(f"SKIP (outside project): {src}", quiet)
         _emit("skipped")
         return
 
     # Watch mode passes files directly, so ignored dirs must be checked here too
-    if is_ignored_file(src) or is_in_ignored_dir(src, root):
+    if is_ignored_file(src, project) or is_in_ignored_dir(src, project):
         log(f"SKIP (ignored): {rel}", quiet)
         _emit("skipped")
         return
 
-    dest = choose_destination(src, root)
+    dest = choose_destination(src, project)
     if dest is None:
         log(f"SKIP (no rule): {rel}", quiet)
         _emit("skipped")
         return
 
-    src_resolved = src.resolve()
-    dest_resolved = dest.resolve(strict=False)
-
-    if src_resolved == dest_resolved:
+    if _already_sorted(src, dest):
         log(f"OK (already sorted): {rel}", quiet)
         _emit("skipped")
         return
@@ -185,18 +195,10 @@ def process_file(
     final_dest = dest
     if final_dest.exists():
         final_dest = resolve_collision(final_dest)
-        try:
-            new_rel = final_dest.relative_to(root)
-        except ValueError:
-            new_rel = final_dest
-        log(f"COLLISION (renamed): {new_rel}", quiet)
+        log(f"COLLISION (renamed): {_rel(final_dest, project)}", quiet)
 
     if dry_run:
-        try:
-            to_rel = final_dest.relative_to(root)
-        except ValueError:
-            to_rel = final_dest
-        log(f"DRY RUN: {rel} -> {to_rel}", quiet)
+        log(f"DRY RUN: {rel} -> {_rel(final_dest, project)}", quiet)
         _emit("processed")
         return
 
@@ -204,11 +206,7 @@ def process_file(
 
     moved = robust_move(src, final_dest)
     if moved:
-        try:
-            to_rel = final_dest.relative_to(root)
-        except ValueError:
-            to_rel = final_dest
-        log(f"MOVED: {rel} -> {to_rel}", quiet)
+        log(f"MOVED: {rel} -> {_rel(final_dest, project)}", quiet)
         _emit("moved")
         _emit("processed")
     else:
@@ -217,22 +215,18 @@ def process_file(
         _emit("processed")
 
 
-def sort_project(
-    root: Path,
-    dry_run: bool = False,
-    quiet: bool = False,
-    files: Optional[Iterable[Path]] = None,
-    fast_mode: bool = False,
+def _process_all(
+    targets: Iterable[Path],
+    project: Project,
+    dry_run: bool,
+    quiet: bool,
+    fast_mode: bool,
 ) -> None:
-    root = Path(root).expanduser().resolve()
-    targets = list(files) if files is not None else list(iter_files(root))
-    log(f"Sorting root: {root}", quiet)
-
     for src in targets:
         try:
             process_file(
                 src=Path(src),
-                root=root,
+                project=project,
                 dry_run=dry_run,
                 quiet=quiet,
                 fast_mode=fast_mode,
@@ -242,16 +236,36 @@ def sort_project(
             _emit("errors")
 
 
+def sort_project(
+    root: Path,
+    dry_run: bool = False,
+    quiet: bool = False,
+    files: Optional[Iterable[Path]] = None,
+    fast_mode: bool = False,
+) -> None:
+    """
+    Sort every file under root (or just `files`). The project config is
+    looked up from root, so root can be the project or any folder inside it.
+    Raises ProjectNotFoundError / ProjectConfigError if there is no valid config.
+    """
+    root = Path(root).expanduser().resolve()
+    project = load_project(root)
+    targets = list(files) if files is not None else list(iter_files(root, project))
+    log(f"Sorting root: {root}", quiet)
+    _process_all(targets, project, dry_run, quiet, fast_mode)
+
+
 def sort_project_batch(
     root: Path,
     dry_run: bool = False,
     quiet: bool = False,
     batch_size: int = 50,
     fast_mode: bool = False,
-    inter_batch_delay: float = 1.0,
+    inter_batch_delay: float = INTER_BATCH_DELAY,
 ) -> None:
     root = Path(root).expanduser().resolve()
-    all_files = list(iter_files(root))
+    project = load_project(root)
+    all_files = list(iter_files(root, project))
     total = len(all_files)
 
     if total == 0:
@@ -267,19 +281,7 @@ def sort_project_batch(
         batch_total = (total + batch_size - 1) // batch_size
 
         log(f"Batch {batch_index}/{batch_total}: {len(batch)} files", quiet)
-
-        for src in batch:
-            try:
-                process_file(
-                    src=src,
-                    root=root,
-                    dry_run=dry_run,
-                    quiet=quiet,
-                    fast_mode=fast_mode,
-                )
-            except Exception as error:
-                log(f"ERROR ({src.name}): {error}", quiet)
-                _emit("errors")
+        _process_all(batch, project, dry_run, quiet, fast_mode)
 
         if not dry_run and end < total:
             time.sleep(inter_batch_delay)
