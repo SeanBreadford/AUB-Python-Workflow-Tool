@@ -62,7 +62,9 @@ class FileSorterGUI:
         # State
         self.processing = False
         self.log_queue: "queue.Queue[str]" = queue.Queue()
-        self.op_queue: "queue.Queue[str]" = queue.Queue()
+        # Worker threads must never call Tk (not even root.after), so they
+        # queue callables here and the Tk thread runs them
+        self.ui_queue: "queue.Queue[tuple]" = queue.Queue()
         self.stats = {"processed": 0, "moved": 0, "skipped": 0, "errors": 0}
 
         # Watch state
@@ -360,10 +362,15 @@ class FileSorterGUI:
             pass
         try:
             while True:
-                self._apply_operation(self.op_queue.get_nowait())
+                callback, args = self.ui_queue.get_nowait()
+                callback(*args)
         except queue.Empty:
             pass
         self.root.after(120, self._poll_log_queue)
+
+    def call_soon(self, callback, *args) -> None:
+        """Run callback on the Tk thread. Safe to call from any thread."""
+        self.ui_queue.put((callback, args))
 
     # Stats Helpers
     def _reset_stats(self) -> None:
@@ -380,8 +387,8 @@ class FileSorterGUI:
             self._refresh_stats()
 
     def _on_operation(self, operation: str) -> None:
-        # Called from worker threads: queue it for the Tk thread to apply
-        self.op_queue.put(operation)
+        # Called from worker threads
+        self.call_soon(self._apply_operation, operation)
 
     # Project Check
     def _ensure_project(self, root: Path) -> bool:
@@ -469,7 +476,7 @@ class FileSorterGUI:
             self.log_queue.put(f"ERROR: {error}")
             status = "Sort failed."
         finally:
-            self.root.after(0, self._finish_sort_ui, status)
+            self.call_soon(self._finish_sort_ui, status)
 
     def _finish_sort_ui(self, status: str) -> None:
         self.processing = False
@@ -500,7 +507,7 @@ class FileSorterGUI:
         except Exception as error:
             self.log_queue.put(f"ERROR: {error}")
             status = "Version report failed."
-        self.root.after(0, self.status_var.set, status)
+        self.call_soon(self.status_var.set, status)
 
     # Watch Actions
     def toggle_watch(self) -> None:
