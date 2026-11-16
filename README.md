@@ -90,9 +90,10 @@ python main.py --root ~/TUP --serve
   version**.
 - **Versions**: every version of every file, marked *latest* and
   *approved* / *sent for review*. Images and H.264 video play in the page,
-  and image sequences show their middle frame. **Show in folder** opens the
-  file's folder. Formats browsers can't show (EXR, TIFF, scene files) are
-  listed without a preview.
+  and image sequences show their middle frame. With Pillow installed, the
+  grid and lists use small cached thumbnails (a 21 MB 4K render becomes a
+  6 KB preview) and TIFF, TGA and BMP get previews too. **Show in folder**
+  opens the file's folder. EXR and scene files are listed without a preview.
 - **Activity and Inbox**: a feed of every saved version, status change and
   note, newest first. Changes by others on your tasks that you haven't seen
   are highlighted and counted in your **Inbox**.
@@ -257,7 +258,9 @@ never touched.
 
 - Python 3.11+ (tested on 3.13 and 3.15). The standard library covers
   everything else, including the web server.
-- `watchdog`, only for watch mode: `pip install watchdog`
+- Optional: `watchdog` for watch mode, and `pillow` for small thumbnails
+  and TIFF/TGA previews: `pip install watchdog pillow`. Thumbnails are cached
+  on each computer (never in the shared project).
 
 A standalone executable can be built with `pyinstaller TUP_File_Sorter.spec`.
 
@@ -287,7 +290,7 @@ Known limitations:
 - Who saved a file is only known when the name says so (see *Who saved
   what*); a name that isn't on the team list becomes part of the file name.
 - There are no permissions: anyone can set any status.
-- Browsers can't preview EXR or TIFF, and Firefox may not play `.mov`.
+- EXR files get no preview, and Firefox may not play `.mov`.
 
 ## Project layout
 

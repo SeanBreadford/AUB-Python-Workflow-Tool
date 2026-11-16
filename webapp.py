@@ -54,6 +54,58 @@ RESCAN_AFTER_SECONDS = 30
 IMAGE_EXT = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
 VIDEO_EXT = {".mp4", ".mov", ".webm", ".m4v"}
 MEDIA_EXT = IMAGE_EXT | VIDEO_EXT
+
+# Optional: with Pillow installed, images are served as small cached JPEG
+# thumbnails (real renders are often 2K-4K), and formats browsers can't show
+# (TIFF, TGA, BMP) get previews too. Without it, originals are served as-is.
+try:
+    from PIL import Image, ImageOps
+
+    Image.init()
+    PIL_AVAILABLE = True
+except ImportError:  # pragma: no cover - depends on the machine
+    PIL_AVAILABLE = False
+CONVERTIBLE_EXT = {".tif", ".tiff", ".tga", ".bmp"}
+THUMB_WIDTHS = (320, 1920)  # grid/panel, and full view for formats browsers can't show
+
+
+def thumb_cache_dir() -> Path:
+    """Per-computer cache, never inside the synced project."""
+    override = os.getenv("FILE_SORTER_CACHE")
+    if override:
+        base = Path(override)
+    elif sys.platform.startswith("win"):
+        base = Path(os.getenv("LOCALAPPDATA", Path.home() / "AppData" / "Local")) / "TUPFileSorter"
+    elif sys.platform == "darwin":
+        base = Path.home() / "Library" / "Caches" / "TUPFileSorter"
+    else:
+        base = Path(os.getenv("XDG_CACHE_HOME", Path.home() / ".cache")) / "tup-file-sorter"
+    return base / "thumbs"
+
+
+def make_thumbnail(path: Path, width: int) -> Path:
+    """A JPEG at most `width` wide, cached by file, size, modified time and width."""
+    stat = path.stat()
+    key = hashlib.sha1(f"{path}|{stat.st_size}|{stat.st_mtime_ns}|{width}".encode()).hexdigest()
+    cached = thumb_cache_dir() / key[:2] / f"{key}.jpg"
+    if cached.exists():
+        return cached
+    with Image.open(path) as image:
+        image.draft("RGB", (width, width))  # fast path for big JPEGs
+        image = ImageOps.exif_transpose(image)
+        if image.mode not in ("RGB", "L"):
+            image = image.convert("RGBA") if "A" in image.getbands() else image.convert("RGB")
+        if image.mode == "RGBA":
+            # Flatten transparency onto the page background instead of black
+            background = Image.new("RGB", image.size, (42, 42, 42))
+            background.paste(image, mask=image.getchannel("A"))
+            image = background
+        image.thumbnail((width, width * 4))
+        cached.parent.mkdir(parents=True, exist_ok=True)
+        temporary = cached.with_suffix(f".{os.getpid()}.{threading.get_ident()}.tmp")
+        image.convert("RGB").save(temporary, "JPEG", quality=82, optimize=True)
+    os.replace(temporary, cached)  # atomic: a half-written thumbnail is never served
+    return cached
 STATIC_FILES = {"index.html", "app.css", "app.js"}
 CSP = (
     "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
@@ -74,7 +126,7 @@ def open_in_file_browser(path: Path) -> None:
 
 def media_kind(path: Path) -> str | None:
     ext = path.suffix.lower()
-    if ext in IMAGE_EXT:
+    if ext in IMAGE_EXT or (PIL_AVAILABLE and ext in CONVERTIBLE_EXT):
         return "image"
     if ext in VIDEO_EXT:
         return "video"
@@ -136,8 +188,14 @@ def _media_entry(path: Path, project: Project) -> dict | None:
     kind = media_kind(path)
     if kind is None:
         return None
-    rel = path.relative_to(project.root)
-    return {"kind": kind, "url": "/media/" + "/".join(quote(part, safe="") for part in rel.parts)}
+    rel = "/".join(quote(part, safe="") for part in path.relative_to(project.root).parts)
+    original = f"/media/{rel}"
+    if kind == "image" and PIL_AVAILABLE:
+        stamp = path.stat().st_mtime_ns  # changes when the file does, so browsers refetch
+        thumb = lambda width: f"/thumb/{rel}?w={width}&v={stamp}"  # noqa: E731
+        full = original if path.suffix.lower() in IMAGE_EXT else thumb(1920)
+        return {"kind": kind, "url": full, "thumb": thumb(320)}
+    return {"kind": kind, "url": original, "thumb": original}
 
 
 def _versions_for(index: VersionIndex, project: Project, entity: str) -> list[dict]:
@@ -177,7 +235,7 @@ def _thumbnail(index: VersionIndex, project: Project, entity: str) -> str | None
         candidate = files[len(files) // 2] if latest.is_sequence else files[0]
         if media_kind(candidate) == "image" and (best is None or latest.modified > best[0]):
             best = (latest.modified, candidate)
-    return _media_entry(best[1], project)["url"] if best else None
+    return _media_entry(best[1], project)["thumb"] if best else None
 
 
 def _task_json(project: Project, state, index: VersionIndex) -> dict:
@@ -383,6 +441,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._static(url.path[len("/static/"):])
         if url.path.startswith("/media/"):
             return self._media(url.path[len("/media/"):])
+        if url.path.startswith("/thumb/"):
+            return self._thumb(url.path[len("/thumb/"):], parse_qs(url.query))
         if url.path.startswith("/api/"):
             return self._api_get(url.path[len("/api/"):], parse_qs(url.query))
         return self._error(HTTPStatus.NOT_FOUND, "Not found")
@@ -446,6 +506,32 @@ class Handler(BaseHTTPRequestHandler):
         if is_ignored_file(path, project) or is_in_ignored_dir(path, project):
             return None
         return path
+
+    def _thumb(self, rel: str, query: dict) -> None:
+        path = self._resolve_media(rel)
+        if path is None or media_kind(path) != "image":
+            return self._error(HTTPStatus.NOT_FOUND, "No such image")
+        if not PIL_AVAILABLE:
+            return self._media(rel)
+        raw = query.get("w", ["320"])[0]
+        width = int(raw) if raw.isdigit() and int(raw) in THUMB_WIDTHS else 320
+        try:
+            thumbnail = make_thumbnail(path, width)
+        except (OSError, ValueError, Image.DecompressionBombError):
+            # Unreadable or unsupported image: the original is the best we can do
+            if path.suffix.lower() in IMAGE_EXT:
+                return self._media(rel)
+            return self._error(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, "Can't make a preview of this image")
+        body = thumbnail.read_bytes()
+        self._response_started = True
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "image/jpeg")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Cache-Control", "private, max-age=86400")  # URL changes when the file does
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(body)
 
     def _media(self, rel: str) -> None:
         path = self._resolve_media(rel)

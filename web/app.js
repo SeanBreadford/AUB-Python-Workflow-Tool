@@ -647,7 +647,7 @@ function renderVersions(entity, task) {
       let preview;
       if (v.media && v.media.kind === "image") {
         preview = el("button", { class: "preview", type: "button", "aria-label": `View ${v.label}`, onclick: () => openViewer(product.name, v) },
-          el("img", { class: "preview", src: v.media.url, alt: "", loading: "lazy" }));
+          el("img", { class: "preview", src: v.media.thumb || v.media.url, alt: "", loading: "lazy" }));
       } else if (v.media && v.media.kind === "video") {
         preview = el("button", { class: "preview", type: "button", "aria-label": `Play ${v.label}`, text: "▶", onclick: () => openViewer(product.name, v) });
       } else {

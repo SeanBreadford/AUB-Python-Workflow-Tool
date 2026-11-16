@@ -18,6 +18,7 @@ from filesystem import sort_project  # noqa: E402
 from project import init_project, load_project  # noqa: E402
 from tracking import build_tracker, contrast_ratio, record_event, status_colors  # noqa: E402
 from versions import scan_versions  # noqa: E402
+import webapp  # noqa: E402
 from webapp import COOKIE_NAME, BrowserServer  # noqa: E402
 
 FILES = {
@@ -195,7 +196,7 @@ class ApiTests(ServerTestCase):
         self.assertEqual((sh05["act"], sh05["sequence"]), ("Act_1", "SQ_01"))
         layout = next(t for t in sh05["tasks"] if t["task"] == "layout")
         self.assertEqual((layout["status"], layout["latest"]), ("wfa", "v002"))
-        self.assertTrue(sh05["thumbnail"].startswith("/media/production/"))
+        self.assertRegex(sh05["thumbnail"], r"^/(thumb|media)/production/")  # /thumb/ with Pillow
         self.assertTrue(any(e["name"] == "prop_OilLamp" for e in data["entities"]))
 
     def test_entity_detail(self) -> None:
@@ -336,3 +337,73 @@ class ApiTests(ServerTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipUnless(webapp.PIL_AVAILABLE, "needs Pillow")
+class ThumbnailTests(ServerTestCase):
+    def setUp(self) -> None:
+        self._cache = tempfile.TemporaryDirectory()
+        self._env = mock.patch.dict(os.environ, {"FILE_SORTER_CACHE": self._cache.name})
+        self._env.start()
+        super().setUp()
+        from PIL import Image
+
+        Image.new("RGB", (1920, 1080), (200, 80, 40)).save(self.root / "SH06_comp_v001.png")
+        Image.new("RGB", (800, 450), (40, 80, 200)).save(self.root / "SH07_comp_v001.tif")
+        with redirect_stdout(io.StringIO()):
+            sort_project(self.root, fast_mode=True)
+        self.json("POST", "/api/rescan", {})
+
+    def tearDown(self) -> None:
+        super().tearDown()
+        self._env.stop()
+        self._cache.cleanup()
+
+    def media(self, shot: str) -> dict:
+        _, data = self.json("GET", f"/api/entity?name={shot}")
+        return next(p for p in data["products"] if "comp" in p["name"])["versions"][0]["media"]
+
+    def test_big_image_gets_a_small_cached_thumbnail(self) -> None:
+        from PIL import Image
+
+        media = self.media("SH06")
+        self.assertTrue(media["thumb"].startswith("/thumb/"))
+        response, body = self.request("GET", media["thumb"])
+        self.assertEqual((response.status, response.getheader("Content-Type")), (200, "image/jpeg"))
+        self.assertEqual(Image.open(io.BytesIO(body)).size, (320, 180))
+        self.assertEqual(len(list(Path(self._cache.name).rglob("*.jpg"))), 1)
+        _, again = self.request("GET", media["thumb"])  # from the cache
+        self.assertEqual(again, body)
+        self.assertTrue(media["url"].startswith("/media/"))  # full view stays the original
+
+    def test_unreadable_image_falls_back_to_the_original(self) -> None:
+        # SH05_comp_v001.png in the shared test project isn't a real PNG
+        media = self.media("SH05")
+        response, body = self.request("GET", media["thumb"])
+        self.assertEqual((response.status, body), (200, FILES["SH05_comp_v001.png"]))
+
+    def test_tiff_gets_a_preview(self) -> None:
+        from PIL import Image
+
+        media = self.media("SH07")
+        self.assertEqual(media["kind"], "image")
+        self.assertIn("w=1920", media["url"])  # browsers can't show TIFF, so the full view is converted
+        response, body = self.request("GET", media["url"])
+        self.assertEqual(response.status, 200)
+        self.assertEqual(Image.open(io.BytesIO(body)).format, "JPEG")
+
+    def test_thumbnail_url_changes_when_the_file_does(self) -> None:
+        before = self.media("SH06")["thumb"]
+        path = next(self.root.rglob("SH06_comp_v001.png"))
+        os.utime(path, (time.time() + 60, time.time() + 60))
+        self.json("POST", "/api/rescan", {})
+        self.assertNotEqual(self.media("SH06")["thumb"], before)
+
+    def test_thumbnails_stay_inside_the_project(self) -> None:
+        for path in ("/thumb/..%2Fsecret.png", "/thumb/_pipeline/project.toml",
+                     "/thumb/production/Acts/Act_1/SQ_01/SC_05/SH05/layout/SH05_layout_v001.ma"):
+            with self.subTest(path=path):
+                response, _ = self.request("GET", path)
+                self.assertEqual(response.status, 404)
+        response, _ = self.request("GET", self.media("SH06")["thumb"], auth=False)
+        self.assertEqual(response.status, 403)
