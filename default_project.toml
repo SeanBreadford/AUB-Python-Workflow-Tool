@@ -373,6 +373,19 @@ after_retake = "wip"
 stale_days = 7
 
 
+# The people on the project. When a file name has someone's name or initials
+# right after the version (SH05_layout_v004_sam.ma or SH05_layout_v004_SB.ma),
+# the file is credited to them: the activity feed says who saved it, version
+# clashes say who clashed, and the first person to save a file for an
+# unassigned task is assigned to it. Only names listed here count, so words
+# like "final" in SH05_comp_v001_final.nk are never mistaken for a person.
+# Example (remove the # to use it):
+#
+# [[team]]
+# name = "sam"
+# aliases = ["SB"]
+
+
 # Files that match no rule.
 [fallback]
 dest = "incoming"

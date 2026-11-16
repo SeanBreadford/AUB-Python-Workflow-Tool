@@ -26,10 +26,25 @@ class ParsedName:
     version: int | None
     frame: int | None
     copy: bool = False  # the sorter renamed it to avoid overwriting: a second file claiming this version
+    artist: str | None = None  # team member named right after the version (SH05_layout_v004_sam.ma)
 
 
 # The sorter renames clashes to <name>_001, _002...; see resolve_collision
 COPY_SUFFIX_RE = re.compile(r"_\d{3}$")
+# A word straight after the version; it only counts if it's someone on the team
+TOKEN_RE = re.compile(r"[_.\-]([A-Za-z][A-Za-z0-9]*)(?=[_.\-]|$)")
+
+
+def _artist_after(text: str, position: int, project: Project) -> tuple[str, int] | None:
+    """(team member, end index) if the word at `position` names someone on the team."""
+    if not project.team:
+        return None
+    found = TOKEN_RE.match(text, position)
+    if found:
+        artist = project.artist_for(found.group(1))
+        if artist:
+            return artist, found.end()
+    return None
 
 
 def _last_match(pattern: re.Pattern[str], text: str) -> re.Match[str] | None:
@@ -45,6 +60,7 @@ def parse_name(filename: str, project: Project) -> ParsedName:
 
     SH05_layout_v003.ma        -> SH05_layout.ma, 3, None
     SH05_beauty_v002_0001.exr  -> SH05_beauty_####.exr, 2, 1
+    SH05_layout_v004_sam.ma    -> SH05_layout.ma, 4, artist "sam" (if sam is on the team)
     """
     path = PurePosixPath(filename)
     stem, suffix = path.stem, path.suffix
@@ -57,7 +73,12 @@ def parse_name(filename: str, project: Project) -> ParsedName:
         base = stem[: found.start()]
         version_end = _last_match(project.version_pattern, base)
         frame_end = _last_match(project.frame_pattern, base) if project.frame_pattern else None
-        if any(m is not None and m.end() == len(base) for m in (version_end, frame_end)):
+        ends = [m.end() for m in (version_end, frame_end) if m is not None]
+        if version_end is not None:
+            artist_end = _artist_after(base, version_end.end(), project)  # SH05_layout_v004_sam_001
+            if artist_end:
+                ends.append(artist_end[1])
+        if len(base) in ends:
             stem, copy = base, True
 
     frame = None
@@ -69,12 +90,17 @@ def parse_name(filename: str, project: Project) -> ParsedName:
             stem = stem[:start] + "#" * (end - start) + stem[end:]
 
     version = None
+    artist = None
     found = _last_match(project.version_pattern, stem)
     if found:
         version = int(found.group("version"))
-        stem = stem[: found.start()] + stem[found.end() :]
+        end = found.end()
+        credited = _artist_after(stem, end, project)
+        if credited:
+            artist, end = credited
+        stem = stem[: found.start()] + stem[end:]
 
-    return ParsedName(stem + suffix, version, frame, copy)
+    return ParsedName(stem + suffix, version, frame, copy, artist)
 
 
 # Index Model
@@ -85,6 +111,7 @@ class Version:
     modified: float = 0.0
     is_sequence: bool = False
     copies: list[Path] = field(default_factory=list)
+    artists: list[str] = field(default_factory=list)  # who saved it, in order seen
 
     @property
     def label(self) -> str:
@@ -99,11 +126,15 @@ class Product:
     task: str | None
     versions: dict[int | None, Version] = field(default_factory=dict)
 
-    def add(self, number: int | None, path: Path, is_sequence: bool, is_copy: bool = False) -> None:
+    def add(
+        self, number: int | None, path: Path, is_sequence: bool, is_copy: bool = False, artist: str | None = None
+    ) -> None:
         version = self.versions.setdefault(number, Version(number))
         version.files.append(path)
         if is_copy:
             version.copies.append(path)
+        if artist and artist not in version.artists:
+            version.artists.append(artist)
         version.is_sequence = version.is_sequence or is_sequence
         version.modified = max(version.modified, path.stat().st_mtime)
 
@@ -177,7 +208,7 @@ def scan_versions(project: Project, root: Path | None = None) -> VersionIndex:
         parsed = parse_name(path.name, project)
         key = (rule.task or "", parsed.name.lower())
         product = entity.products.setdefault(key, Product(parsed.name, rule.task))
-        product.add(parsed.version, path, parsed.frame is not None, parsed.copy)
+        product.add(parsed.version, path, parsed.frame is not None, parsed.copy, parsed.artist)
 
     # Entity types appear in the order the config first uses them
     type_order: dict[str | None, int] = {}

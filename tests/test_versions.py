@@ -38,6 +38,8 @@ class ParseNameTests(unittest.TestCase):
             "SH05_vfx_v2.ma": ("SH05_vfx.ma", 2, None),
             "prop_OilLamp_disp_001.png": ("prop_OilLamp_disp_001.png", None, None),
             "README": ("README", None, None),
+            # Without a team list, a name after the version is just part of the name
+            "SH05_layout_v004_sam.ma": ("SH05_layout_sam.ma", 4, None),
         }
         for filename, expected in cases.items():
             with self.subTest(filename=filename):

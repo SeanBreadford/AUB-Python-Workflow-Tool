@@ -41,6 +41,7 @@ class DemoTests(unittest.TestCase):
 
     def test_statuses_that_moved_by_themselves(self) -> None:
         self.assertEqual((self.layout("SH06").status, self.layout("SH06").updated_by), ("wip", "files"))
+        self.assertEqual(self.layout("SH06").assignee, "sam")  # assigned by saving its first file
         self.assertEqual((self.layout("SH07").status, self.layout("SH07").updated_by), ("wip", "files"))
 
     def test_feedback_waiting_for_you(self) -> None:

@@ -22,9 +22,9 @@ from tracking import EVENTS_DIR_NAME
 #   SH01  approved on v002, then someone saved v003     -> changed after approval
 #   SH02  sent for review on v001, then v002 arrived    -> newer than submitted
 #   SH03  retake 9 days ago, nothing since              -> stalled
-#   SH04  two people both saved "v004"                  -> version clash
+#   SH04  sam and alex both saved "v004"                -> version clash
 #   SH05  assigned to you, the director left feedback   -> new for you
-#   SH06  files saved, nobody touched a status          -> moved to wip by itself
+#   SH06  sam saved files, nobody touched anything      -> wip and assigned to sam by itself
 #   SH07  retake yesterday, artist saved a fix          -> back to wip by itself
 
 HOUR = 3600
@@ -106,39 +106,45 @@ def create_demo(root: Path, you: str) -> Path:
     if any(root.iterdir()):
         raise FileExistsError(f"The demo needs an empty folder, so nothing of yours is touched: {root}")
     init_project(root)
+    # The team, so names in file names are credited (SH05_layout_v002_sam.ma)
+    team = ["sam", "alex", "priya"] + ([] if you in ("sam", "alex", "priya") else [you])
+    config = root / CONFIG_DIR_NAME / "project.toml"
+    with config.open("a", encoding="utf-8") as handle:
+        for name in team:
+            handle.write(f'\n[[team]]\nname = "{name}"\n')
     b = _Builder(root, you)
 
     # A comp still per shot, for thumbnails
     for i, (start, end) in enumerate(PALETTES):
         b.save(f"SH0{i + 1}_comp_v001.png", 2 * DAY, png=(start, end, 9 + i))
 
-    # SH01: approved on v002, then someone saved v003
-    b.save("SH01_layout_v001.ma", 6 * DAY)
-    b.save("SH01_layout_v002.ma", 4 * DAY)
+    # SH01: approved on v002, then alex saved v003
+    b.save("SH01_layout_v001_sam.ma", 6 * DAY)
+    b.save("SH01_layout_v002_sam.ma", 4 * DAY)
     b.event(3 * DAY, "priya", "status", "SH01", "layout", status="done",
             note="Approved, lovely staging", versions={"SH01_layout.ma": 2})
-    b.save("SH01_layout_v003.ma", 5 * HOUR)
+    b.save("SH01_layout_v003_alex.ma", 5 * HOUR)
 
     # SH02: sent for review on v001, then v002 arrived
-    b.save("SH02_layout_v001.ma", 2 * DAY)
+    b.save("SH02_layout_v001_alex.ma", 2 * DAY)
     b.event(2 * DAY - HOUR, "alex", "status", "SH02", "layout", status="wfa",
             note="Ready for a look", versions={"SH02_layout.ma": 1})
-    b.save("SH02_layout_v002.ma", 3 * HOUR)
+    b.save("SH02_layout_v002_alex.ma", 3 * HOUR)
 
     # SH03: retake 9 days ago, nothing since
-    b.save("SH03_layout_v001.ma", 12 * DAY)
+    b.save("SH03_layout_v001_sam.ma", 12 * DAY)
     b.event(9 * DAY, "priya", "status", "SH03", "layout", status="retake",
             note="Camera crosses the line at f120, please flip", versions={"SH03_layout.ma": 1})
     b.event(9 * DAY, "priya", "assign", "SH03", "layout", assignee="sam")
 
-    # SH04: two people both saved "v004"
-    b.save("SH04_layout_v003.ma", 3 * DAY)
-    b.save("SH04_layout_v004.ma", 26 * HOUR)
-    b.save("SH04_layout_v004.ma", 25 * HOUR)
+    # SH04: sam and alex both saved "v004"
+    b.save("SH04_layout_v003_sam.ma", 3 * DAY)
+    b.save("SH04_layout_v004_sam.ma", 26 * HOUR)
+    b.save("SH04_layout_v004_alex.ma", 25 * HOUR)
 
     # SH05: assigned to you; the director left feedback today
-    b.save("SH05_layout_v001.ma", 3 * DAY)
-    b.save("SH05_layout_v002.ma", 1 * DAY)
+    b.save(f"SH05_layout_v001_{you}.ma", 3 * DAY)
+    b.save(f"SH05_layout_v002_{you}.ma", 1 * DAY)
     b.event(1 * DAY - HOUR, you, "status", "SH05", "layout", status="wfa",
             note="Camera locked", versions={"SH05_layout.ma": 2})
     b.event(1 * DAY - HOUR, "priya", "assign", "SH05", "layout", assignee=you)
@@ -147,22 +153,21 @@ def create_demo(root: Path, you: str) -> Path:
     b.event(1 * HOUR, "alex", "note", "SH05", "layout",
             text="I can share the reference I used for SH04's crane if it helps")
 
-    # SH06: the artist saved files and never touched a status
-    b.save("SH06_layout_v001.ma", 6 * HOUR)
-    b.save("SH06_layout_v002.ma", 40 * 60)
+    # SH06: sam saved files and never touched a status (or an assignment)
+    b.save("SH06_layout_v001_sam.ma", 6 * HOUR)
+    b.save("SH06_layout_v002_sam.ma", 40 * 60)
 
     # SH07: retake yesterday, artist saved a fix this morning
-    b.save("SH07_layout_v001.ma", 3 * DAY)
+    b.save("SH07_layout_v001_alex.ma", 3 * DAY)
     b.event(1 * DAY, "priya", "status", "SH07", "layout", status="retake",
             note="Too dark", versions={"SH07_layout.ma": 1})
-    b.save("SH07_layout_v002.ma", 4 * HOUR)
+    b.save("SH07_layout_v002_alex.ma", 4 * HOUR)
 
-    # Assets
-    _png(root / "prop_OilLamp_diffuse_v002.png", (90, 50, 10), (250, 200, 90), 16, 256, 256)
-    (root / "prop_OilLamp_v002.fbx").write_text("demo\n")
-    (root / "char_Princess_body_v004.ma").write_text("demo\n")
-    (root / "env_Castle_v001.blend").write_text("demo\n")
-    b._sort()
+    # Assets, a few days old so the feed opens on the shots
+    b.save("prop_OilLamp_diffuse_v002_sam.png", 5 * DAY, png=((90, 50, 10), (250, 200, 90), 16))
+    b.save("prop_OilLamp_v002_sam.fbx", 5 * DAY)
+    b.save("char_Princess_body_v004_alex.ma", 4 * DAY)
+    b.save("env_Castle_v001_priya.blend", 6 * DAY)
 
     b.write_events()
     return root

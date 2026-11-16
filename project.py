@@ -87,6 +87,12 @@ class Automation:
     then_status: str
 
 
+@dataclass(frozen=True)
+class TeamMember:
+    name: str
+    aliases: tuple[str, ...] = ()
+
+
 # Project Model
 @dataclass(frozen=True)
 class Project:
@@ -115,6 +121,16 @@ class Project:
     auto_after_retake: str | None = None
     # Warn when an active task has had no new file or change for this long
     stale_days: int | None = None
+    # People on the project; their names/initials in file names credit the file
+    team: tuple[TeamMember, ...] = ()
+
+    def artist_for(self, token: str) -> str | None:
+        """The team member a filename token like "sam" or "SB" refers to."""
+        token = token.lower()
+        for member in self.team:
+            if token == member.name.lower() or token in (a.lower() for a in member.aliases):
+                return member.name
+        return None
 
     @property
     def default_status(self) -> Status | None:
@@ -467,6 +483,28 @@ def _parse_automations(
     return tuple(automations)
 
 
+def _parse_team(raw_team: list) -> tuple[TeamMember, ...]:
+    members: list[TeamMember] = []
+    seen: dict[str, str] = {}
+    for index, raw in enumerate(raw_team):
+        table = _Table(raw, f"team[{index}]")
+        name = table.get("name", str).strip()
+        table.where = f"team[{index}] ({name})"
+        aliases = tuple(a.strip() for a in table.str_list("aliases", []))
+        table.done()
+        for token in (name, *aliases):
+            if not re.fullmatch(r"[A-Za-z][A-Za-z0-9]*", token):
+                raise ProjectConfigError(
+                    f"{table.where}: '{token}' must be letters and digits only, starting with a letter "
+                    "(it has to fit in a file name like SH05_layout_v004_sam.ma)"
+                )
+            if token.lower() in seen:
+                raise ProjectConfigError(f"{table.where}: '{token}' is already used by {seen[token.lower()]}")
+            seen[token.lower()] = name
+        members.append(TeamMember(name, aliases))
+    return tuple(members)
+
+
 def _parse_project(root: Path, config_path: Path, data: dict) -> Project:
     top = _Table(data, config_path.name)
 
@@ -542,6 +580,8 @@ def _parse_project(root: Path, config_path: Path, data: dict) -> Project:
     if auto_started and not auto_start_from:
         raise ProjectConfigError("auto_status: 'started' needs 'start_from' (which statuses count as not started)")
 
+    team = _parse_team(top.get("team", list, []))
+
     health = _Table(top.get("health", dict, {}), "health")
     stale_days = health.get("stale_days", int, None)
     health.done()
@@ -574,4 +614,5 @@ def _parse_project(root: Path, config_path: Path, data: dict) -> Project:
         auto_started=auto_started,
         auto_after_retake=auto_after_retake,
         stale_days=stale_days,
+        team=team,
     )

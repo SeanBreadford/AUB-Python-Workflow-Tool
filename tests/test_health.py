@@ -164,3 +164,55 @@ class ConfigTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TeamTests(HealthTestCase):
+    """Names in file names credit the artist (only for people on the team)."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        config = self.root / "_pipeline" / "project.toml"
+        config.write_text(config.read_text() + '\n[[team]]\nname = "sam"\naliases = ["SB"]\n'
+                          '\n[[team]]\nname = "alex"\n')
+        self.project = load_project(self.root)
+
+    def test_first_file_assigns_its_artist(self) -> None:
+        self.save("SH05_layout_v001_SB.ma")
+        tracker = self.tracker()
+        self.assertEqual(tracker.task("SH05", "layout").assignee, "sam")
+        files = [a for a in tracker.activity if a["kind"] == "file"]
+        self.assertEqual(files[0]["artists"], ["sam"])
+
+    def test_files_never_undo_an_assignment(self) -> None:
+        self.save("SH05_layout_v001_sam.ma", -120)
+        self.record("assign", "SH05", "layout", user="priya", assignee=None)  # deliberately unassigned
+        self.save("SH05_layout_v002_alex.ma", +5)
+        self.assertIsNone(self.tracker().task("SH05", "layout").assignee)
+
+    def test_two_artists_on_one_version_is_a_clash(self) -> None:
+        self.save("SH05_layout_v004_sam.ma", -60)
+        self.save("SH05_layout_v004_alex.ma", -30)
+        flags = self.flags()
+        self.assertIn("2 files claim SH05_layout.ma v004 (alex and sam)", flags["conflict"])
+
+    def test_stalled_names_the_last_artist(self) -> None:
+        self.save("SH05_layout_v001_sam.ma", -60)
+        later = datetime.now(timezone.utc) + timedelta(days=10)
+        self.assertIn("(last file from sam)", self.flags(now=later)["stalled"])
+
+    def test_unknown_names_are_not_credited(self) -> None:
+        self.save("SH05_layout_v001_final.ma")
+        tracker = self.tracker()
+        self.assertIsNone(tracker.task("SH05", "layout").assignee)
+        self.assertEqual(list(tracker.task("SH05", "layout").latest), ["SH05_layout_final.ma"])
+
+    def test_team_config_is_checked(self) -> None:
+        config = self.root / "_pipeline" / "project.toml"
+        original = config.read_text()
+        for extra, message in (('\n[[team]]\nname = "Sam"\n', "already used by sam"),
+                               ('\n[[team]]\nname = "s.b"\n', "letters and digits only")):
+            with self.subTest(extra=extra):
+                config.write_text(original + extra)
+                with self.assertRaises(ProjectConfigError) as caught:
+                    load_project(self.root)
+                self.assertIn(message, str(caught.exception))

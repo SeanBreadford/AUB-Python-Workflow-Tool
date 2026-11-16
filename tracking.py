@@ -69,6 +69,8 @@ class TaskState:
     last_activity: str | None = None
     # "Two files claim SH05_layout.ma v004"
     conflicts: list[str] = field(default_factory=list)
+    last_artist: str | None = None  # who saved the newest file, when the name says
+    assigned_by_person: bool = False  # once someone (un)assigns, files never change it
 
 
 @dataclass(frozen=True)
@@ -210,6 +212,7 @@ def file_events(index: VersionIndex | None) -> list[dict]:
                     "files": len(version.files),
                     "copies": len(version.copies),
                     "sequence": version.is_sequence,
+                    "artists": list(version.artists),
                 })
     return events
 
@@ -248,13 +251,25 @@ def build_tracker(project: Project, index: VersionIndex | None = None) -> Tracke
 
         if event["type"] == "file":
             product, number = event["product"], event.get("version") or 0
+            artists = event.get("artists") or []
             state.latest[product] = max(state.latest.get(product, -1), number)
-            if event.get("copies"):
-                state.conflicts.append(f"{event['copies'] + 1} files claim {product} {event['label']}")
+            if artists:
+                state.last_artist = artists[-1]
+            # A clash: the sorter had to rename a same-named file, or two people
+            # put their name on the same version (SH05_layout_v004_sam / _alex)
+            if event.get("copies") or len(artists) > 1:
+                claimants = max(event.get("copies", 0) + 1, len(artists))
+                who = f" ({' and '.join(artists)})" if len(artists) > 1 else ""
+                state.conflicts.append(f"{claimants} files claim {product} {event['label']}{who}")
             tracker.activity.append({**base, "kind": "file", "product": product, "label": event["label"],
                                      "files": event["files"], "sequence": event.get("sequence", False),
-                                     "copies": event.get("copies", 0)})
+                                     "copies": event.get("copies", 0), "artists": artists})
             _auto_status(project, tracker, state, time, state_for)
+            # Whoever saves the first file for an unassigned task is working on it
+            if artists and state.assignee is None and not state.assigned_by_person:
+                state.assignee = artists[0]
+                tracker.activity.append({**base, "kind": "assign", "user": "files", "assignee": artists[0],
+                                         "auto": True})
         elif event["type"] == "status":
             state.status = str(event.get("status", default)).lower()
             state.updated, state.updated_by = time, user
@@ -271,6 +286,7 @@ def build_tracker(project: Project, index: VersionIndex | None = None) -> Tracke
             tracker.activity.append({**base, "kind": "note", "user": user, "note": str(event.get("text", ""))})
         elif event["type"] == "assign":
             state.assignee = event.get("assignee") or None
+            state.assigned_by_person = True
             state.updated, state.updated_by = time, user
             tracker.activity.append({**base, "kind": "assign", "user": user, "assignee": state.assignee})
 
@@ -345,9 +361,11 @@ def task_flags(project: Project, state: TaskState, now: datetime | None = None) 
         except ValueError:
             idle = 0
         if idle >= project.stale_days:
-            what = "Retake noted" if status.retake else "No new file or update"
-            flags.append(Flag("stalled", f"{what} {idle} days ago" if status.retake
-                              else f"{what} for {idle} days"))
+            who = f" (last file from {state.last_artist})" if state.last_artist else ""
+            if status.retake:
+                flags.append(Flag("stalled", f"Retake noted {idle} days ago, no new version yet{who}"))
+            else:
+                flags.append(Flag("stalled", f"No new file or update for {idle} days{who}"))
     return flags
 
 
@@ -587,7 +605,7 @@ def format_entity(tracker: Tracker, index: VersionIndex | None, name: str) -> st
 
         products = [p for p in versions.sorted_products() if p.task == state.task] if versions else []
         for product in products:
-            history = ", ".join(v.label for v in product.history())
+            history = ", ".join(v.label + (f" {'/'.join(v.artists)}" if v.artists else "") for v in product.history())
             lines.append(f"  {product.name}  latest {product.latest.label}  [{history}]")
         for note in state.notes:
             tag = f" [{note.status}]" if note.status else ""

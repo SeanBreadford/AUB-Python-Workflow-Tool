@@ -37,9 +37,9 @@ The demo recreates one real production problem per shot:
 | SH01 | Changed after it was approved |
 | SH02 | A newer version arrived after it was sent for review |
 | SH03 | A retake nobody has answered |
-| SH04 | Two people both saved v004 |
+| SH04 | sam and alex both saved v004 |
 | SH05 | Assigned to you, with new feedback in your Inbox |
-| SH06, SH07 | Moved to *In progress* just from files being saved |
+| SH06, SH07 | Moved to *In progress* (and SH06 assigned to sam) just from files being saved |
 
 ## Features
 
@@ -118,12 +118,28 @@ served from inside the project, never from ignored folders.
   existed at that moment, so *Approved* means "v003 approved".
 - **Warnings**, most serious first:
   - *Version clash*: two files claim the same version (two people saved
-    `v004`, and the sorter kept both).
+    `v004`, and the sorter kept both, or both put their name on it).
   - *Changed after approval*: a newer version appeared after sign-off.
   - *Newer than what was sent for review*: the reviewer may be looking at
     an old version.
   - *Stalled*: an active task with no new file or update for `stale_days`,
     or a retake nobody has answered.
+
+**Who saved what.** List the team in the config, and names or initials
+right after the version are credited:
+
+```toml
+[[team]]
+name = "sam"
+aliases = ["SB"]          # so SH05_layout_v004_SB.ma counts too
+```
+
+`SH05_layout_v004_sam.ma` then shows as "sam saved v004". The first person to
+save a file for an unassigned task is assigned to it (unless someone has set
+the assignee by hand), clashes say who clashed ("v004 (alex and sam)"), and
+stalled tasks name the last person who saved. Only listed names count, so
+words like `final` in `SH05_comp_v001_final.nk` are never mistaken for a
+person.
 
 All of this is worked out from the files and the notes logs each time, so
 nothing extra is stored or synced. It's set up in the project config's
@@ -268,7 +284,8 @@ Not yet tested:
 
 Known limitations:
 
-- The feed can't say who saved a file, only that a version was saved.
+- Who saved a file is only known when the name says so (see *Who saved
+  what*); a name that isn't on the team list becomes part of the file name.
 - There are no permissions: anyone can set any status.
 - Browsers can't preview EXR or TIFF, and Firefox may not play `.mov`.
 

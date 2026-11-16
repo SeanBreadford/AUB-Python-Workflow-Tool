@@ -373,9 +373,11 @@ function activitySentence(item) {
   });
   if (item.kind === "file") {
     const frames = item.sequence && item.files > 1 ? ` (${item.files} frames)` : "";
-    const parts = [el("span", {}, target, ` · ${item.label} of ${item.product} saved${frames}`)];
-    if (item.copies) {
-      parts.push(el("div", { class: "alert inline", text: `⚠ ${item.copies + 1} files claim ${item.label}: two people may have saved the same version` }));
+    const who = item.artists && item.artists.length ? `${item.artists.join(" and ")} saved` : "Saved";
+    const parts = [el("span", {}, `${who} ${item.label} of ${item.product}${frames} · `, target)];
+    const clash = item.copies || (item.artists && item.artists.length > 1);
+    if (clash) {
+      parts.push(el("div", { class: "alert inline", text: `⚠ More than one file claims ${item.label}: two people may have saved the same version` }));
     }
     return parts;
   }
@@ -389,6 +391,9 @@ function activitySentence(item) {
     return [el("span", {}, `${item.user} commented on `, target), el("blockquote", { text: item.note })];
   }
   if (item.kind === "assign") {
+    if (item.auto) {
+      return [el("span", {}, target, ` assigned to ${item.assignee} (they saved its first file)`)];
+    }
     return [el("span", {}, `${item.user} ${item.assignee ? `assigned ${item.assignee} to ` : "unassigned "}`, target)];
   }
   return [el("span", {}, target)];
@@ -485,7 +490,10 @@ function taskSummary(task) {
   if (task.updated_by === "files") parts.push(" (a new file moved it)");
   else if (task.updated_by) parts.push(` by ${task.updated_by}`);
   parts.push(". ");
-  if (task.latest) parts.push(`Newest version: `, el("b", { text: task.latest }), ". ");
+  if (task.latest) {
+    parts.push("Newest version: ", el("b", { text: task.latest }),
+      task.last_artist ? ` by ${task.last_artist}. ` : ". ");
+  }
   parts.push(task.assignee ? el("span", {}, "Assigned to ", el("b", { text: task.assignee }), ".") : "Not assigned to anyone.");
   return parts;
 }
@@ -606,8 +614,9 @@ function alertFor(flag, task) {
     buttons.push(el("button", { class: "button", type: "button", text: "Submit newest for review",
       onclick: () => runAction({ key: "review" }, { redecide: true }) }));
   } else if (flag.code === "conflict") {
-    const product = state.entity.products.find((p) => p.task === task.task && p.versions.some((v) => v.copies));
-    const version = product && product.versions.find((v) => v.copies);
+    const clashed = (v) => v.copies || v.artists.length > 1;
+    const product = state.entity.products.find((p) => p.task === task.task && p.versions.some(clashed));
+    const version = product && product.versions.find(clashed);
     if (version) {
       buttons.push(el("button", { class: "button", type: "button", text: "Show both files",
         onclick: () => reveal(version.path) }));
@@ -645,7 +654,8 @@ function renderVersions(entity, task) {
         preview = el("span", { class: "preview none", text: "no preview", title: "Browsers can't display this file type" });
       }
       const decided = task && task.decided_on && v.number !== null && task.decided_on[product.name] === v.number;
-      const meta = [formatMtime(v.modified), v.sequence ? `${v.files} frames` : null].filter(Boolean).join(" · ");
+      const meta = [v.artists && v.artists.length ? `by ${v.artists.join(" and ")}` : null,
+        formatMtime(v.modified), v.sequence ? `${v.files} frames` : null].filter(Boolean).join(" · ");
       return el("div", { class: "version-row" },
         preview,
         el("span", { class: "label" }, v.label),
@@ -668,7 +678,7 @@ function renderNotes(task) {
 }
 
 function fillPeople() {
-  const people = new Set();
+  const people = new Set(state.project ? state.project.team : []);
   for (const { task } of allTasks()) if (task.assignee) people.add(task.assignee);
   if (me()) people.add(me());
   setChildren($("people"), ...[...people].sort().map((p) => el("option", { value: p })));

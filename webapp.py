@@ -158,6 +158,7 @@ def _versions_for(index: VersionIndex, project: Project, entity: str) -> list[di
                 "sequence": version.is_sequence,
                 "path": files[0].relative_to(project.root).as_posix(),
                 "copies": len(version.copies),
+                "artists": list(version.artists),
                 "media": _media_entry(preview, project),
             })
         products.append({"name": product.name, "task": product.task, "versions": versions})
@@ -193,6 +194,7 @@ def _task_json(project: Project, state, index: VersionIndex) -> dict:
         "updated": state.updated,
         "updated_by": state.updated_by,
         "last_activity": state.last_activity,
+        "last_artist": state.last_artist,
         "latest": latest,
         "decided_on": state.decided_on,
         "flags": [{"code": f.code, "message": f.message}
@@ -230,6 +232,7 @@ def project_json(project: Project) -> dict:
         ],
         "task_types": project.task_types,
         "actions": workflow_actions(project),
+        "team": [member.name for member in project.team],
     }
 
 
