@@ -1,578 +1,183 @@
 from __future__ import annotations
 
-import queue
+import json
+import os
 import sys
-import threading
-import time
 import tkinter as tk
 import webbrowser
 from pathlib import Path
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox
 
-from config import DEFAULT_BATCH_SIZE, ROOT
-from filesystem import set_operation_callback, sort_project, sort_project_batch
 from project import ProjectConfigError, ProjectNotFoundError, init_project, load_project
-from theme import COLORS, apply_ttk_style
+from theme import COLORS, FONT
 from webapp import BrowserServer
 
-try:
-    from watcher import DebouncedHandler, Observer
-    WATCH_AVAILABLE = Observer is not None
-except Exception:
-    DebouncedHandler = None  # type: ignore[assignment]
-    Observer = None  # type: ignore[assignment]
-    WATCH_AVAILABLE = False
+# The desktop app is a small launcher: pick the project folder, open the
+# project browser (where sorting, auto-sort and tracking all live), and keep
+# this window open while you work. Closing it stops everything.
+
+DEMO_FOLDER = Path.home() / "TUP Demo"
 
 
-# Log Writer
-class QueueWriter:
-    def __init__(self, out_queue: "queue.Queue[str]") -> None:
-        self.out_queue = out_queue
+# Settings
+def settings_path() -> Path:
+    """Per-computer settings (the last project folder)."""
+    override = os.getenv("FILE_SORTER_CONFIG_HOME")
+    if override:
+        base = Path(override)
+    elif sys.platform.startswith("win"):
+        base = Path(os.getenv("APPDATA", Path.home() / "AppData" / "Roaming")) / "TUPFileSorter"
+    elif sys.platform == "darwin":
+        base = Path.home() / "Library" / "Application Support" / "TUPFileSorter"
+    else:
+        base = Path(os.getenv("XDG_CONFIG_HOME", Path.home() / ".config")) / "tup-file-sorter"
+    return base / "settings.json"
 
-    def write(self, message: str) -> None:
-        message = message.strip()
-        if message:
-            self.out_queue.put(message)
 
-    def flush(self) -> None:
-        return
+def load_settings() -> dict:
+    try:
+        return json.loads(settings_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
 
 
-# App UI
-class FileSorterGUI:
-    def __init__(self, root_window: tk.Tk) -> None:
-        self.root = root_window
-        self.root.title("Production File Organiser")
-        self.root.geometry("1200x780")
-        self.root.minsize(900, 600)
-        self.root.configure(bg=COLORS["bg"])
+def save_settings(settings: dict) -> None:
+    path = settings_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(settings, indent=2), encoding="utf-8")
+    except OSError:
+        pass  # not remembering the folder is an inconvenience, not an error
 
-        # State
-        self.processing = False
-        self.log_queue: "queue.Queue[str]" = queue.Queue()
-        # Worker threads must never call Tk (not even root.after), so they
-        # queue callables here and the Tk thread runs them
-        self.ui_queue: "queue.Queue[tuple]" = queue.Queue()
-        self.stats = {"processed": 0, "moved": 0, "skipped": 0, "errors": 0}
 
-        # Local web server for the project browser, started on demand
-        self.web_server: BrowserServer | None = None
+# Launcher
+class Launcher:
+    def __init__(self, window: tk.Tk) -> None:
+        self.window = window
+        self.server: BrowserServer | None = None
+        window.title("TUP Project Browser")
+        window.geometry("640x340")
+        window.minsize(520, 300)
+        window.configure(bg=COLORS["bg"])
+        window.option_add("*highlightThickness", 0)  # Tk 9 draws light focus outlines otherwise
 
-        # Watch state
-        self.watching = False
-        self.observer = None
-        self.handler = None
+        remembered = load_settings().get("project", "")
+        self.folder_var = tk.StringVar(value=os.getenv("FILE_SORTER_ROOT", remembered))
+        self.status_var = tk.StringVar(value="" if remembered else "Choose your team's project folder to begin.")
+        self._build()
 
-        # Variables
-        self.root_var = tk.StringVar(value=str(ROOT))
-        self.dry_run_var = tk.BooleanVar(value=False)
-        self.fast_mode_var = tk.BooleanVar(value=False)
-        self.batch_var = tk.BooleanVar(value=False)
-        self.batch_size_var = tk.IntVar(value=DEFAULT_BATCH_SIZE)
-        self.status_var = tk.StringVar(value="Ready")
+    def _label(self, parent, text="", size=10, muted=False, bold=False, **kwargs) -> tk.Label:
+        return tk.Label(parent, text=text, bg=kwargs.pop("bg", COLORS["bg"]),
+                        fg=COLORS["muted"] if muted else COLORS["text"],
+                        font=(FONT, size, "bold" if bold else "normal"), anchor="w", justify="left", **kwargs)
 
-        self._build_ui()
-        self._poll_log_queue()
-        self.log_queue.put("Tip: tick “Preview only” and press “Sort files now” to see where files "
-                           "would go, without moving anything.")
+    def _button(self, parent, text, command, primary=False) -> tk.Button:
+        return tk.Button(parent, text=text, command=command, relief="flat", cursor="hand2",
+                         bg=COLORS["accent"] if primary else "#444", fg="white",
+                         activebackground=COLORS["accent"], activeforeground="white",
+                         padx=16, pady=10 if primary else 7, font=(FONT, 11 if primary else 10))
 
-        # Route sorter output and stats to the GUI for the app's lifetime,
-        # so watch mode is visible too (and works when stdout is None in the exe)
-        self._old_stdout = sys.stdout
-        sys.stdout = QueueWriter(self.log_queue)
-        set_operation_callback(self._on_operation)
+    def _build(self) -> None:
+        frame = tk.Frame(self.window, bg=COLORS["bg"])
+        frame.pack(fill="both", expand=True, padx=22, pady=18)
 
-    # UI Build
-    def _build_ui(self) -> None:
-        apply_ttk_style(self.root)
-        outer = tk.Frame(self.root, bg=COLORS["bg"])
-        outer.pack(fill="both", expand=True, padx=14, pady=14)
+        self._label(frame, "TUP Project Browser", size=18, bold=True).pack(fill="x")
+        self._label(frame, "Pick your team's project folder and open the project browser. Sorting, "
+                    "auto-sort and tracking are all in there. Keep this window open while you work.",
+                    muted=True, wraplength=580).pack(fill="x", pady=(4, 14))
 
-        title = tk.Label(
-            outer,
-            text="Production File Organiser",
-            bg=COLORS["bg"],
-            fg=COLORS["text"],
-            font=("Segoe UI", 18, "bold"),
-        )
-        title.pack(anchor="w", pady=(0, 10))
+        self._label(frame, "Project folder", bold=True).pack(fill="x")
+        row = tk.Frame(frame, bg=COLORS["bg"])
+        row.pack(fill="x", pady=(4, 14))
+        tk.Entry(row, textvariable=self.folder_var, bg=COLORS["input"], fg=COLORS["text"],
+                 insertbackground=COLORS["text"], relief="flat", bd=8, font=(FONT, 10)).pack(
+            side="left", fill="x", expand=True)
+        self._button(row, "Choose…", self.choose_folder).pack(side="left", padx=(8, 0))
 
-        # Status bar (shared by both tabs)
-        status_bar = tk.Label(
-            outer,
-            textvariable=self.status_var,
-            bg=COLORS["bg"],
-            fg=COLORS["muted"],
-            anchor="w",
-            font=("Segoe UI", 9),
-        )
-        status_bar.pack(side="bottom", fill="x", pady=(8, 0))
+        actions = tk.Frame(frame, bg=COLORS["bg"])
+        actions.pack(fill="x")
+        self.open_button = self._button(actions, "Open Project Browser", self.open_project, primary=True)
+        self.open_button.pack(side="left")
+        self._button(actions, "Try the demo", self.open_demo).pack(side="left", padx=(10, 0))
 
-        container = tk.Frame(outer, bg=COLORS["bg"])
-        container.pack(fill="both", expand=True)
+        self._label(frame, textvariable=self.status_var, muted=True, wraplength=580).pack(fill="x", pady=(14, 0))
 
-        tk.Label(
-            container,
-            text="Sorts files dropped into the project into the right folders. "
-            "Use the Project Browser to see and update where every shot is up to.",
-            bg=COLORS["bg"],
-            fg=COLORS["muted"],
-            font=("Segoe UI", 10),
-            anchor="w",
-            justify="left",
-        ).pack(fill="x", pady=(0, 10))
+    # Actions
+    def choose_folder(self) -> None:
+        folder = filedialog.askdirectory(title="Choose your team's project folder")
+        if folder:
+            self.folder_var.set(folder)
 
-        # Project folder
-        root_panel = tk.Frame(container, bg=COLORS["panel"])
-        root_panel.pack(fill="x", pady=(0, 10))
-        root_panel.configure(highlightbackground="#2d2d2d", highlightthickness=1)
-
-        tk.Label(
-            root_panel,
-            text="Project folder",
-            bg=COLORS["panel"],
-            fg=COLORS["text"],
-            font=("Segoe UI", 10, "bold"),
-        ).pack(anchor="w", padx=10, pady=(10, 0))
-        tk.Label(
-            root_panel,
-            text="The folder your team shares. The first time, you'll be asked to set it up.",
-            bg=COLORS["panel"],
-            fg=COLORS["muted"],
-            font=("Segoe UI", 9),
-        ).pack(anchor="w", padx=10, pady=(0, 4))
-
-        row = tk.Frame(root_panel, bg=COLORS["panel"])
-        row.pack(fill="x", padx=10, pady=(0, 10))
-
-        root_entry = tk.Entry(
-            row,
-            textvariable=self.root_var,
-            bg=COLORS["input"],
-            fg=COLORS["text"],
-            insertbackground=COLORS["text"],
-            relief="flat",
-            bd=8,
-            font=("Segoe UI", 10),
-        )
-        root_entry.pack(side="left", fill="x", expand=True)
-
-        browse = tk.Button(
-            row,
-            text="Choose…",
-            command=self._browse_root,
-            bg="#444",
-            fg="white",
-            relief="flat",
-            padx=14,
-            pady=8,
-            cursor="hand2",
-        )
-        browse.pack(side="left", padx=(8, 0))
-
-        # Options, each with a plain explanation
-        options = tk.Frame(container, bg=COLORS["panel"])
-        options.pack(fill="x", pady=(0, 10))
-        options.configure(highlightbackground="#2d2d2d", highlightthickness=1)
-
-        tk.Label(
-            options,
-            text="Sorting options",
-            bg=COLORS["panel"],
-            fg=COLORS["text"],
-            font=("Segoe UI", 10, "bold"),
-        ).grid(row=0, column=0, columnspan=3, sticky="w", padx=10, pady=(10, 4))
-
-        check_style = {
-            "bg": COLORS["panel"],
-            "fg": COLORS["text"],
-            "selectcolor": COLORS["input"],
-            "activebackground": COLORS["panel"],
-            "activeforeground": COLORS["text"],
-            "font": ("Segoe UI", 10),
-            "anchor": "w",
-        }
-        hint_style = {"bg": COLORS["panel"], "fg": COLORS["muted"], "font": ("Segoe UI", 9), "anchor": "w"}
-
-        option_rows = (
-            (self.dry_run_var, "Preview only",
-             "Lists where each file would go, without moving anything. Good for a first try."),
-            (self.fast_mode_var, "Skip the sync check",
-             "Normally files must stop changing for a moment first, so half-uploaded files aren't moved."),
-        )
-        for index, (variable, text, hint) in enumerate(option_rows, start=1):
-            tk.Checkbutton(options, text=text, variable=variable, **check_style).grid(
-                row=index, column=0, sticky="w", padx=10, pady=2
-            )
-            tk.Label(options, text=hint, **hint_style).grid(row=index, column=1, columnspan=2, sticky="w", padx=(4, 10))
-
-        batch_row = tk.Frame(options, bg=COLORS["panel"])
-        batch_row.grid(row=3, column=0, columnspan=3, sticky="w", padx=10, pady=(2, 10))
-        tk.Checkbutton(batch_row, text="Work in batches of", variable=self.batch_var, **check_style).pack(side="left")
-        tk.Spinbox(
-            batch_row,
-            from_=1,
-            to=500,
-            textvariable=self.batch_size_var,
-            width=5,
-            bg=COLORS["input"],
-            fg=COLORS["text"],
-            relief="flat",
-            bd=4,
-            buttonbackground=COLORS["panel"],
-            highlightthickness=0,
-        ).pack(side="left", padx=(2, 6))
-        tk.Label(batch_row, text="files (only for very large folders)", **hint_style).pack(side="left")
-
-        # Buttons: the browser first, it's where most people spend their time
-        actions = tk.Frame(container, bg=COLORS["bg"])
-        actions.pack(fill="x", pady=(0, 10))
-
-        def action_button(text: str, command, primary: bool = False) -> tk.Button:
-            button = tk.Button(
-                actions,
-                text=text,
-                command=command,
-                bg=COLORS["accent"] if primary else "#444",
-                fg="white",
-                relief="flat",
-                padx=14,
-                pady=10,
-                cursor="hand2",
-            )
-            button.pack(side="left", padx=(0, 8))
-            return button
-
-        action_button("Open Project Browser", self.open_browser, primary=True)
-        self.sort_btn = action_button("Sort files now", self.start_sort)
-        self.watch_btn = action_button("Auto-sort new files", self.toggle_watch)
-        action_button("Clear log", self.clear_log).configure(bg="#333")
-
-        self.progress = ttk.Progressbar(actions, mode="determinate", value=0)
-        self.progress.pack(side="right", fill="x", expand=True, padx=(20, 0))
-
-        # Stats
-        stats_panel = tk.Frame(container, bg=COLORS["panel"])
-        stats_panel.pack(fill="x", pady=(0, 10))
-        stats_panel.configure(highlightbackground="#2d2d2d", highlightthickness=1)
-
-        tk.Label(
-            stats_panel,
-            text="Stats",
-            bg=COLORS["panel"],
-            fg=COLORS["text"],
-            font=("Segoe UI", 10, "bold"),
-        ).pack(anchor="w", padx=10, pady=(10, 6))
-
-        self.stat_labels: dict[str, tk.Label] = {}
-        line = tk.Frame(stats_panel, bg=COLORS["panel"])
-        line.pack(fill="x", padx=10, pady=(0, 10))
-        for key in ("processed", "moved", "skipped", "errors"):
-            badge = tk.Frame(line, bg=COLORS["input"], padx=10, pady=6)
-            badge.pack(side="left", padx=(0, 8))
-            tk.Label(
-                badge,
-                text=key.title(),
-                bg=COLORS["input"],
-                fg=COLORS["muted"],
-                font=("Segoe UI", 9),
-            ).pack()
-            value = tk.Label(
-                badge,
-                text="0",
-                bg=COLORS["input"],
-                fg=COLORS["text"],
-                font=("Segoe UI", 11, "bold"),
-            )
-            value.pack()
-            self.stat_labels[key] = value
-
-        # Log panel
-        log_panel = tk.Frame(container, bg=COLORS["panel"])
-        log_panel.pack(fill="both", expand=True)
-        log_panel.configure(highlightbackground="#2d2d2d", highlightthickness=1)
-
-        tk.Label(
-            log_panel,
-            text="Log",
-            bg=COLORS["panel"],
-            fg=COLORS["text"],
-            font=("Segoe UI", 10, "bold"),
-        ).pack(anchor="w", padx=10, pady=(10, 6))
-
-        self.log_text = tk.Text(
-            log_panel,
-            bg=COLORS["input"],
-            fg=COLORS["text"],
-            insertbackground=COLORS["text"],
-            relief="flat",
-            font=("Consolas", 10),
-            wrap="word",
-            padx=10,
-            pady=10,
-        )
-        self.log_text.pack(fill="both", expand=True, padx=10, pady=(0, 10))
-        self.log_text.configure(state="disabled")
-
-    # UI Actions
-    def open_browser(self) -> None:
-        """Serve the project browser locally and open it in the web browser."""
-        root = Path(self.root_var.get()).expanduser().resolve()
-        if not root.exists():
-            messagebox.showerror("Invalid root", f"Folder does not exist:\n{root}")
+    def open_project(self) -> None:
+        text = self.folder_var.get().strip()
+        if not text:
+            messagebox.showinfo("Choose a folder", "Choose your team's project folder first.")
             return
-        if not self._ensure_project(root):
+        folder = Path(text).expanduser().resolve()
+        if not folder.is_dir():
+            messagebox.showerror("Folder not found", f"This folder doesn't exist:\n{folder}")
             return
-        project_root = load_project(root).root
-        if self.web_server is None or self.web_server.state.root != project_root:
-            self._stop_web_server()
-            self.web_server = BrowserServer(project_root)
-            self.web_server.start()
-            self.log_queue.put(f"Project browser: {self.web_server.url}")
-        webbrowser.open(self.web_server.url)
-        self.status_var.set("Project browser opened in your web browser.")
-
-    def _stop_web_server(self) -> None:
-        if self.web_server is not None:
-            self.web_server.stop()
-            self.web_server = None
-
-    def _browse_root(self) -> None:
-        selected = filedialog.askdirectory(title="Select project root")
-        if selected:
-            self.root_var.set(selected)
-
-    def clear_log(self) -> None:
-        self.log_text.configure(state="normal")
-        self.log_text.delete("1.0", "end")
-        self.log_text.configure(state="disabled")
-
-    def _append_log(self, text: str) -> None:
-        self.log_text.configure(state="normal")
-        self.log_text.insert("end", text + "\n")
-        # Keep log size reasonable
-        max_lines = 1000
-        line_count = int(self.log_text.index("end-1c").split(".")[0])
-        if line_count > max_lines:
-            self.log_text.delete("1.0", f"{line_count - max_lines}.0")
-        self.log_text.see("end")
-        self.log_text.configure(state="disabled")
-
-    def _poll_log_queue(self) -> None:
         try:
-            while True:
-                message = self.log_queue.get_nowait()
-                self._append_log(message)
-        except queue.Empty:
-            pass
-        try:
-            while True:
-                callback, args = self.ui_queue.get_nowait()
-                callback(*args)
-        except queue.Empty:
-            pass
-        self._poll_id = self.root.after(120, self._poll_log_queue)
-
-    def call_soon(self, callback, *args) -> None:
-        """Run callback on the Tk thread. Safe to call from any thread."""
-        self.ui_queue.put((callback, args))
-
-    # Stats Helpers
-    def _reset_stats(self) -> None:
-        self.stats = {"processed": 0, "moved": 0, "skipped": 0, "errors": 0}
-        self._refresh_stats()
-
-    def _refresh_stats(self) -> None:
-        for key, label in self.stat_labels.items():
-            label.configure(text=str(self.stats.get(key, 0)))
-
-    def _apply_operation(self, operation: str) -> None:
-        if operation in self.stats:
-            self.stats[operation] += 1
-            self._refresh_stats()
-
-    def _on_operation(self, operation: str) -> None:
-        # Called from worker threads
-        self.call_soon(self._apply_operation, operation)
-
-    # Project Check
-    def _ensure_project(self, root: Path) -> bool:
-        """True if root has a valid project config; offers to create one if not."""
-        try:
-            project = load_project(root)
+            project = load_project(folder)
         except ProjectConfigError as error:
-            messagebox.showerror("Project config error", str(error))
-            return False
+            messagebox.showerror("The project's settings have a problem", str(error))
+            return
         except ProjectNotFoundError:
-            create = messagebox.askyesno(
-                "No project config",
-                f"This folder isn't set up as a project yet:\n{root}\n\n"
-                "Create the default project config here?",
-            )
-            if create:
-                path = init_project(root)
-                self.log_queue.put(f"Created project config: {path}")
-                messagebox.showinfo(
-                    "Project created",
-                    f"Review the rules in:\n{path}\n\nThen run again, ideally with Dry Run first.",
-                )
-            return False
+            if not messagebox.askyesno(
+                "Set up this folder?",
+                f"This folder isn't set up as a project yet:\n{folder}\n\n"
+                "Set it up with the standard TUP structure? This adds a _pipeline folder with the "
+                "project's settings. Nothing else is changed.",
+            ):
+                return
+            init_project(folder)
+            project = load_project(folder)
+        self._serve(project.root)
 
-        self.root.title(f"Production File Organiser - {project.name}")
-        return True
+    def open_demo(self) -> None:
+        from demo import create_demo
+        from tracking import current_user
 
-    # Sort Actions
-    def start_sort(self) -> None:
-        if self.processing:
-            messagebox.showwarning("Busy", "Sorting is already running.")
-            return
+        folder = DEMO_FOLDER
+        if not (folder / "_pipeline").is_dir():
+            if folder.exists() and any(folder.iterdir()):
+                messagebox.showerror("Can't create the demo",
+                                     f"{folder} already has other files in it, so the demo wasn't created there.")
+                return
+            create_demo(folder, current_user())
+        self.folder_var.set(str(folder))
+        self._serve(folder)
 
-        root = Path(self.root_var.get()).expanduser().resolve()
-        if not root.exists():
-            messagebox.showerror("Invalid root", f"Folder does not exist:\n{root}")
-            return
-        if not self._ensure_project(root):
-            return
+    def _serve(self, root: Path) -> None:
+        if self.server is None or self.server.state.root != root:
+            self._stop_server()
+            self.server = BrowserServer(root)
+            self.server.start()
+        save_settings({**load_settings(), "project": str(root)})
+        webbrowser.open(self.server.url)
+        self.open_button.configure(text="Open again")
+        self.status_var.set(f"Running for {root.name}. Your browser should have opened; if not, press "
+                            "Open again. Closing this window stops the project browser and auto-sort.")
 
-        try:
-            batch_size = max(1, self.batch_size_var.get())
-        except tk.TclError:
-            messagebox.showerror("Invalid batch size", "Batch size must be a whole number.")
-            return
+    def _stop_server(self) -> None:
+        if self.server is not None:
+            self.server.stop()
+            self.server = None
 
-        # Read Tk variables here: they must not be touched from the worker thread
-        options = {
-            "dry_run": self.dry_run_var.get(),
-            "fast_mode": self.fast_mode_var.get(),
-            "batch": self.batch_var.get(),
-            "batch_size": batch_size,
-        }
-
-        self.processing = True
-        self._reset_stats()
-        self.progress.configure(mode="indeterminate")
-        self.progress.start(10)
-        self.sort_btn.configure(state="disabled")
-        self.status_var.set("Sorting...")
-
-        worker = threading.Thread(target=self._sort_worker, args=(root, options), daemon=True)
-        worker.start()
-
-    def _sort_worker(self, root: Path, options: dict) -> None:
-        status = "Sort complete."
-        try:
-            if options["batch"]:
-                sort_project_batch(
-                    root=root,
-                    dry_run=options["dry_run"],
-                    quiet=False,
-                    batch_size=options["batch_size"],
-                    fast_mode=options["fast_mode"],
-                )
-            else:
-                sort_project(
-                    root=root,
-                    dry_run=options["dry_run"],
-                    quiet=False,
-                    fast_mode=options["fast_mode"],
-                )
-            if options["dry_run"]:
-                status = "Dry run complete."
-        except Exception as error:
-            self.log_queue.put(f"ERROR: {error}")
-            status = "Sort failed."
-        finally:
-            self.call_soon(self._finish_sort_ui, status)
-
-    def _finish_sort_ui(self, status: str) -> None:
-        self.processing = False
-        if self.web_server is not None:
-            self.web_server.state.invalidate()  # files moved: rescan
-        self.progress.stop()
-        self.progress.configure(mode="determinate", value=0)
-        self.sort_btn.configure(state="normal")
-        self.status_var.set(status)
-
-    # Watch Actions
-    def toggle_watch(self) -> None:
-        if self.watching:
-            self.stop_watch()
-        else:
-            self.start_watch()
-
-    def start_watch(self) -> None:
-        if not WATCH_AVAILABLE:
-            messagebox.showerror(
-                "Watch unavailable",
-                "watchdog is not installed.\nInstall it with: pip install watchdog",
-            )
-            return
-
-        root = Path(self.root_var.get()).expanduser().resolve()
-        if not root.exists():
-            messagebox.showerror("Invalid root", f"Folder does not exist:\n{root}")
-            return
-
-        if self.watching:
-            return
-        if not self._ensure_project(root):
-            return
-
-        self._reset_stats()
-        self.handler = DebouncedHandler(
-            root=root,
-            dry_run=self.dry_run_var.get(),
-            quiet=False,
-            fast_mode=self.fast_mode_var.get(),
-        )
-        self.observer = Observer()
-        self.observer.schedule(self.handler, str(root), recursive=True)
-        self.observer.start()
-
-        self.watching = True
-        self.watch_btn.configure(text="Stop auto-sorting", bg=COLORS["warning"])
-        self.status_var.set("Auto-sorting: new files are sorted as they arrive.")
-
-    def stop_watch(self) -> None:
-        if not self.watching:
-            return
-
-        try:
-            if self.handler:
-                self.handler.stop()
-            if self.observer:
-                self.observer.stop()
-                self.observer.join(timeout=2)
-        finally:
-            self.handler = None
-            self.observer = None
-            self.watching = False
-            self.watch_btn.configure(text="Auto-sort new files", bg="#444")
-            self.status_var.set("Auto-sorting stopped.")
-
-    # Shutdown
     def shutdown(self) -> None:
-        self.stop_watch()
-        # small delay helps watchdog close cleanly
-        time.sleep(0.05)
-        # Cancel pending timers so Tk doesn't call them after the window is gone
-        self.root.after_cancel(self._poll_id)
-        self._stop_web_server()
-        set_operation_callback(None)
-        sys.stdout = self._old_stdout
+        self._stop_server()
 
 
-# Entry Point
 def main() -> None:
-    root = tk.Tk()
-    app = FileSorterGUI(root)
+    window = tk.Tk()
+    launcher = Launcher(window)
 
     def on_close() -> None:
-        app.shutdown()
-        root.destroy()
+        launcher.shutdown()
+        window.destroy()
 
-    root.protocol("WM_DELETE_WINDOW", on_close)
-    root.mainloop()
+    window.protocol("WM_DELETE_WINDOW", on_close)
+    window.mainloop()
 
 
 if __name__ == "__main__":

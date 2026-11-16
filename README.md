@@ -55,16 +55,17 @@ The demo recreates one real production problem per shot:
   automations, shared through the synced folder.
 - **Keeps itself up to date**: statuses move as files arrive, approvals are
   tied to versions, and problems are flagged.
-- **Project browser**: a status grid with thumbnails, image and video
-  previews, one-click review actions, an activity feed and an inbox.
-- **Desktop app** (Tkinter) and a **command line** for everything.
+- **One place to work**: the project browser has the status grid,
+  previews, one-click review actions, an activity feed, an inbox, and
+  sorting. The desktop app is a small launcher for it, and there's a
+  command line for everything.
 - **Safe by default**: refuses to run on a folder that isn't set up as a
   project, and never sorts anything whose name starts with `_`.
 
 ## Project browser
 
-A web page the app serves from your own computer. Open it with **Open
-Project Browser** in the desktop app, or:
+A web page the app serves from your own computer. Open it from the desktop
+app, or:
 
 ```bash
 python main.py --root ~/TUP --serve
@@ -100,6 +101,11 @@ python main.py --root ~/TUP --serve
 - **Live**: other people's changes appear within a few seconds as cloud sync
   brings them in, without refreshing. Files are rescanned every 30 seconds,
   after a sort, or when you press **Refresh**.
+- **Sorting**: **Preview** shows where each file would go, **Sort files
+  now** moves them, and **Auto-sort** keeps sorting new files as they
+  arrive. The result is summed up in a sentence ("4 files moved, 2 waiting:
+  still syncing"), and the log reads as plain sentences, with routine
+  "already in place" lines hidden unless you ask for them.
 - **Friendly**: the first visit asks your name, **?** opens a short guide,
   links like `#SH05/layout` open straight to a task, and if the app is
   closed or a file is locked by the sync app, the page says so plainly.
@@ -160,16 +166,11 @@ computer's clock, keep clocks set automatically.
 python app.py
 ```
 
-Pick the **Project folder** (the first time, it offers to set it up), then:
-
-- **Open Project Browser**: the page above.
-- **Sort files now**: sort everything once. Tick **Preview only** to see
-  where files would go without moving anything.
-- **Auto-sort new files**: keep sorting as files arrive (needs `watchdog`).
-
-**Skip the sync check** skips the short wait that makes sure files have
-finished uploading. **Work in batches** splits very large folders into
-chunks.
+A small launcher. Pick your team's **project folder** once (it's
+remembered) and press **Open Project Browser**; everything else happens in
+the browser. A folder that isn't set up yet gets the standard TUP structure
+after you confirm. **Try the demo** creates and opens the demo project.
+Closing the window stops the project browser and auto-sort.
 
 ## Command line
 
@@ -258,7 +259,7 @@ never touched.
 
 - Python 3.11+ (tested on 3.13 and 3.15). The standard library covers
   everything else, including the web server.
-- Optional: `watchdog` for watch mode, and `pillow` for small thumbnails
+- Optional: `watchdog` for auto-sort (watch mode), and `pillow` for small thumbnails
   and TIFF/TGA previews: `pip install watchdog pillow`. Thumbnails are cached
   on each computer (never in the shared project).
 
@@ -272,9 +273,10 @@ python -m unittest discover -s tests
 
 ## Status
 
-Tested: the full suite (90 tests: sorting, config validation, versions,
-tracking, warnings, the web server's security and API, and the demo end to
-end). The project browser was also clicked through in a Chromium-based
+Tested: the full suite (114 tests: sorting, config validation, versions,
+tracking, warnings, the web server's security and API, sorting from the
+browser, the launcher, and the demo end to end; the launcher tests need a
+display, e.g. `xvfb-run`). The project browser was also clicked through in a Chromium-based
 browser and checked visually in Firefox, on Linux.
 
 Not yet tested:
@@ -298,9 +300,10 @@ Known limitations:
 | --- | --- |
 | `app.py` | Desktop app entry point |
 | `main.py` | Command-line entry point |
-| `gui.py` | Desktop app (Tkinter) |
-| `theme.py` | Desktop app colours and styling |
+| `gui.py` | Desktop launcher (Tkinter) |
+| `theme.py` | Launcher colours |
 | `webapp.py` | Local web server for the project browser |
+| `sorter_service.py` | Sorting and auto-sort for the project browser |
 | `web/` | Project browser page (HTML, CSS, JavaScript) |
 | `project.py` | Loads and validates the project config |
 | `default_project.toml` | Default (TUP) project config |

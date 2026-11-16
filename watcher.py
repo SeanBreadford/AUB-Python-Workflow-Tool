@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Set
 
 from config import DEBOUNCE_SECONDS
-from filesystem import sort_project
+from filesystem import Reporter, _reporter, log, sort_project
 from project import ProjectConfigError, ProjectNotFoundError, load_project
 
 try:
@@ -45,8 +45,10 @@ class DebouncedHandler(FileSystemEventHandler):  # type: ignore[misc]
         quiet: bool = True,
         fast_mode: bool = False,
         debounce_seconds: float = DEBOUNCE_SECONDS,
+        reporter: Reporter | None = None,
     ) -> None:
         self.root = root.resolve()
+        self.reporter = reporter
         self.dry_run = dry_run
         self.quiet = quiet
         self.fast_mode = fast_mode
@@ -80,6 +82,9 @@ class DebouncedHandler(FileSystemEventHandler):  # type: ignore[misc]
 
     # Worker Loop
     def _loop(self) -> None:
+        if self.reporter is not None:
+            # Context variables aren't inherited by threads, so set it here
+            _reporter.set(self.reporter)
         while self._running:
             time.sleep(0.2)
 
@@ -105,8 +110,8 @@ class DebouncedHandler(FileSystemEventHandler):  # type: ignore[misc]
                     fast_mode=self.fast_mode,
                 )
             except (ProjectNotFoundError, ProjectConfigError) as error:
-                print(f"ERROR (project config): {error}")
-                print("Skipped these changes; fix the config and they will be picked up next time.")
+                log(f"ERROR (project config): {error}")
+                log("Skipped these changes; fix the config and they will be picked up next time.")
 
     # Stop Hook
     def stop(self) -> None:

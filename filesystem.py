@@ -2,31 +2,53 @@ from __future__ import annotations
 
 import shutil
 import time
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Iterable, Optional
+from typing import Iterable, Optional
 
 from config import CONFIG_DIR_NAME, INTER_BATCH_DELAY, STABILITY_SAMPLE_DELAY
 from project import Project, load_project
 from rules import choose_destination
 
-# Callback Config
-operation_callback: Optional[Callable[[str], None]] = None
+# Reporting
+# By default sorting prints its log. A Reporter set for the current thread
+# (see reporting()) receives the log and the per-file outcomes instead, so a
+# sort run by the web server gets its own log and counts even while
+# auto-sort runs in another thread.
+class Reporter:
+    def log(self, message: str) -> None:
+        print(message)
+
+    def op(self, kind: str) -> None:
+        """kind: processed, moved, skipped or errors."""
 
 
-def set_operation_callback(callback: Optional[Callable[[str], None]]) -> None:
-    global operation_callback
-    operation_callback = callback
+_reporter: ContextVar[Reporter | None] = ContextVar("sort_reporter", default=None)
+
+
+@contextmanager
+def reporting(reporter: Reporter):
+    token = _reporter.set(reporter)
+    try:
+        yield reporter
+    finally:
+        _reporter.reset(token)
 
 
 def _emit(op: str) -> None:
-    if operation_callback:
-        operation_callback(op)
+    reporter = _reporter.get()
+    if reporter is not None:
+        reporter.op(op)
 
 
 # Log Helpers
 def log(message: str, quiet: bool = False) -> None:
-    if not quiet:
+    reporter = _reporter.get()
+    if reporter is not None:
+        reporter.log(message)  # the reporter decides what to show
+    elif not quiet:
         print(message)
 
 

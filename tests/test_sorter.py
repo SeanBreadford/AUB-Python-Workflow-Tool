@@ -176,11 +176,13 @@ class CloudSafetyTests(ProjectTestCase):
     def test_locked_file_is_deferred_not_an_error(self) -> None:
         (self.root / "SH05_set.blend").write_text("x")
         stats: list[str] = []
-        filesystem.set_operation_callback(stats.append)
-        self.addCleanup(filesystem.set_operation_callback, None)
-        with mock.patch.object(filesystem, "MOVE_RETRY_DELAY", 0), \
+        lines: list[str] = []
+        reporter = filesystem.Reporter()
+        reporter.op, reporter.log = stats.append, lines.append
+        with filesystem.reporting(reporter), mock.patch.object(filesystem, "MOVE_RETRY_DELAY", 0), \
                 mock.patch.object(filesystem.shutil, "move", side_effect=PermissionError("locked")):
-            output = self.sort(fast_mode=True)
+            self.sort(fast_mode=True)
+        output = "\n".join(lines)
         self.assertIn("DEFER (in use, will retry next sort): SH05_set.blend", output)
         self.assertNotIn("errors", stats)
         self.assertTrue((self.root / "SH05_set.blend").exists())

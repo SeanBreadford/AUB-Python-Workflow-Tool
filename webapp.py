@@ -21,6 +21,7 @@ from urllib.parse import parse_qs, quote, unquote, urlsplit
 
 from filesystem import is_ignored_file, is_in_ignored_dir
 from project import Project, ProjectConfigError, ProjectNotFoundError, load_project
+from sorter_service import SorterBusy, SorterService, WatchUnavailable
 from tracking import (
     Tracker,
     TrackingError,
@@ -147,11 +148,13 @@ class ProjectState:
         self.scan_count = 0
         self.tracker: Tracker | None = None
         self.tracker_stamp: tuple | None = None
+        self.invalidations = 0
 
     def invalidate(self) -> None:
         """Files moved (e.g. after a sort): rescan on the next request."""
         with self.lock:
             self.index = None
+            self.invalidations += 1  # so version() changes and open pages refetch
 
     def get(self, rescan: bool = False) -> tuple[Project, VersionIndex, Tracker]:
         with self.lock:
@@ -179,7 +182,8 @@ class ProjectState:
         """Cheap fingerprint the page polls to know when to refetch."""
         with self.lock:
             project = load_project(self.root)
-            parts = (project.config_path.stat().st_mtime_ns, self.scan_count, events_stamp(project))
+            parts = (project.config_path.stat().st_mtime_ns, self.scan_count, self.invalidations,
+                     events_stamp(project))
         return hashlib.sha1(repr(parts).encode()).hexdigest()[:16]
 
 
@@ -484,6 +488,19 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"ok": True})
         if path == "/api/reveal":
             return self._api_reveal(body)
+        if path == "/api/sorter/run":
+            try:
+                started = self.server.sorter.start_sort(preview=body.get("preview") is True,
+                                                        fast=body.get("fast") is True)
+            except SorterBusy as error:
+                return self._error(HTTPStatus.CONFLICT, str(error))
+            return self._json(started)
+        if path == "/api/sorter/watch":
+            try:
+                watch = self.server.sorter.set_watch(body.get("on") is True)
+            except WatchUnavailable as error:
+                return self._error(HTTPStatus.BAD_REQUEST, str(error))
+            return self._json({"watch": dict(watch, counts=dict(watch["counts"])) if watch else None})
         return self._error(HTTPStatus.NOT_FOUND, "Not found")
 
     # Static Files
@@ -593,6 +610,9 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(project_json(project))
         if route == "overview":
             return self._json(overview_json(project, index, tracker))
+        if route == "sorter":
+            raw = query.get("after", ["0"])[0]
+            return self._json(self.server.sorter.status(int(raw) if raw.isdigit() else 0))
         if route == "activity":
             raw = query.get("limit", ["300"])[0]
             limit = min(int(raw), 2000) if raw.isdigit() else 300
@@ -642,6 +662,7 @@ class BrowserServer(ThreadingHTTPServer):
     def __init__(self, root: Path, port: int = 0) -> None:
         super().__init__(("127.0.0.1", port), Handler)
         self.state = ProjectState(root)
+        self.sorter = SorterService(self.state.root, on_change=self.state.invalidate)
         self.token = secrets.token_urlsafe(24)
         self.port = self.server_address[1]
         self.allowed_hosts = {f"127.0.0.1:{self.port}", f"localhost:{self.port}"}
@@ -661,6 +682,7 @@ class BrowserServer(ThreadingHTTPServer):
         return self.url
 
     def stop(self) -> None:
+        self.sorter.shutdown()
         self.shutdown()
         self.server_close()
 
@@ -683,5 +705,6 @@ def serve(root: Path, port: int = 0, open_browser: bool = True) -> None:
     except KeyboardInterrupt:
         pass
     finally:
+        server.sorter.shutdown()
         server.server_close()
         print("Project browser stopped.")

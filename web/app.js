@@ -18,6 +18,7 @@ const state = {
   mine: false,
   attention: false,
   formDirty: false,
+  sorter: { next: 0, log: [], job: null, watch: null, watch_available: true, showAll: false, fast: false },
 };
 
 // Helpers
@@ -220,7 +221,10 @@ function renderSummary() {
     }, el("b", { text: unread }), " in your Inbox")));
   }
   if (state.overview.unsorted) {
-    parts.push(el("span", {}, el("b", { text: state.overview.unsorted }), " files not sorted yet"));
+    parts.push(el("span", {}, el("button", {
+      class: "linkish", type: "button", title: "Open Sorting",
+      onclick: () => setView("sorting"),
+    }, el("b", { text: state.overview.unsorted }), " files not sorted yet")));
   }
   setChildren($("summary"), ...parts);
 }
@@ -228,6 +232,8 @@ function renderSummary() {
 function renderToolbar() {
   $("view-grid").setAttribute("aria-selected", String(state.view === "grid"));
   $("view-activity").setAttribute("aria-selected", String(state.view === "activity"));
+  $("view-sorting").setAttribute("aria-selected", String(state.view === "sorting"));
+  $("toggle-mine").hidden = state.view === "sorting";
   $("toggle-mine").setAttribute("aria-pressed", String(state.mine));
   $("toggle-attention").setAttribute("aria-pressed", String(state.attention));
   $("toggle-attention").hidden = state.view !== "grid";
@@ -266,10 +272,12 @@ function setView(view) {
   renderToolbar();
   renderSummary();
   renderMain();
+  if (view === "sorting") pollSorter();
 }
 
 function renderMain() {
   if (state.view === "activity") renderActivity();
+  else if (state.view === "sorting") renderSorting();
   else renderGrids();
 }
 
@@ -433,6 +441,163 @@ function renderActivity() {
     markSeen();
     renderSummary();
   }
+}
+
+// Sorting
+const LOG_TAGS = {
+  moved: "Moved", preview: "Would move", waiting: "Waiting", error: "Error", renamed: "Renamed",
+  left: "Left alone", ignored: "Ignored", already: "In place", info: "",
+};
+const QUIET_LEVELS = new Set(["already", "ignored", "left"]);
+
+// Turn the sorter's terse log lines into sentences
+function friendly(text) {
+  const rules = [
+    [/^MOVED: (.+) -> (.+)$/, (m) => `${m[1]} → ${m[2]}`],
+    [/^DRY RUN: (.+) -> (.+)$/, (m) => `${m[1]} → ${m[2]}`],
+    [/^DEFER \(still changing\): (.+)$/, (m) => `${m[1]} is still changing (still syncing?). It'll be sorted next time.`],
+    [/^DEFER \(in use[^)]*\): (.+)$/, (m) => `${m[1]} is open in another app. It'll be sorted next time.`],
+    [/^SKIP \(no rule\): (.+)$/, (m) => `${m[1]} (no rule says where it goes)`],
+    [/^SKIP \([^)]*\): (.+)$/, (m) => m[1]],
+    [/^OK \(already sorted\): (.+)$/, (m) => m[1]],
+    [/^COLLISION \(renamed\): (.+)$/, (m) => `The name was taken, so it was saved as ${m[1]}`],
+    [/^Sorting root: (.+)$/, (m) => `Sorting ${m[1]}`],
+    [/^ERROR \(move failed\): (.+)$/, (m) => `Couldn't move ${m[1]}`],
+  ];
+  for (const [pattern, format] of rules) {
+    const found = text.match(pattern);
+    if (found) return format(found);
+  }
+  return text;
+}
+
+function plural(count, one, many = `${one}s`) {
+  return `${count} ${count === 1 ? one : many}`;
+}
+
+function jobSummary(job) {
+  const c = job.counts || {};
+  const parts = [];
+  if (job.kind === "preview") {
+    parts.push(`${plural(c.preview || 0, "file")} would move`);
+  } else {
+    parts.push(`${plural(c.moved || 0, "file")} moved`);
+  }
+  if (c.waiting) parts.push(`${c.waiting} waiting (still syncing or open)`);
+  if (c.renamed) parts.push(`${c.renamed} renamed to avoid overwriting`);
+  if (c.error) parts.push(plural(c.error, "error"));
+  if (c.left) parts.push(`${c.left} left alone (no rule)`);
+  if (c.already) parts.push(`${c.already} already in place`);
+  return parts.join(", ");
+}
+
+let sorterTimer = null;
+async function pollSorter() {
+  clearTimeout(sorterTimer);
+  try {
+    const data = await api(`/api/sorter?after=${state.sorter.next}`);
+    const s = state.sorter;
+    const finishedNow = s.job && !s.job.finished && data.job && data.job.finished;
+    // Only redraw when something changed, so polling never steals focus
+    const changed = data.log.length > 0
+      || JSON.stringify([s.job, s.watch, s.watch_available]) !== JSON.stringify([data.job, data.watch, data.watch_available]);
+    s.log.push(...data.log);
+    if (s.log.length > 2000) s.log.splice(0, s.log.length - 2000);
+    Object.assign(s, { next: data.next, job: data.job, watch: data.watch, watch_available: data.watch_available });
+    if (finishedNow && data.job.kind === "sort") await loadAll(); // files moved: refresh everything
+    if (state.view === "sorting" && changed) renderSorting();
+  } catch (error) {
+    setOffline(error.message);
+  }
+  const busy = state.sorter.job && !state.sorter.job.finished;
+  if (state.view === "sorting" || busy) sorterTimer = setTimeout(pollSorter, busy ? 700 : 1500);
+}
+
+async function runSort(preview) {
+  try {
+    await api("/api/sorter/run", { preview, fast: state.sorter.fast });
+    pollSorter();
+  } catch (error) {
+    toast(error.message, true);
+  }
+}
+
+async function setWatch(on) {
+  try {
+    await api("/api/sorter/watch", { on });
+    pollSorter();
+  } catch (error) {
+    toast(error.message, true);
+  }
+}
+
+function renderSorting() {
+  const s = state.sorter;
+  const busy = s.job && !s.job.finished;
+  const unsorted = state.overview ? state.overview.unsorted : 0;
+
+  const sortCard = el("div", { class: "card" },
+    el("h2", { text: "Sort the project" }),
+    el("p", { text: "Moves files that were saved or dropped in the wrong place into the folders the project's rules say. "
+      + "Nothing is ever overwritten. Try Preview first to see what would happen." }),
+    unsorted ? el("p", {}, el("span", { class: "waiting-count", text: plural(unsorted, "file") }),
+      " belonging to shots or assets are waiting to be sorted.") : null,
+    el("div", { class: "row" },
+      el("button", { class: "button", type: "button", text: "Preview", disabled: busy,
+        title: "List where each file would go, without moving anything", onclick: () => runSort(true) }),
+      el("button", { class: "button primary", type: "button", text: "Sort files now", disabled: busy,
+        onclick: () => runSort(false) }),
+      el("label", { title: "Normally files must stop changing for a moment first, so half-uploaded files aren't moved" },
+        el("input", { type: "checkbox", checked: s.fast, onchange: (e) => { s.fast = e.target.checked; } }),
+        "Skip the sync check")));
+
+  const watchOn = Boolean(s.watch);
+  const watchCard = el("div", { class: "card" },
+    el("h2", { text: "Auto-sort" }),
+    el("p", { text: "Keeps sorting new files as they arrive, for as long as this app is open. "
+      + "One computer on the team is enough." }),
+    s.watch_available
+      ? el("div", { class: "row" },
+        el("button", { class: "switch", type: "button", role: "switch", "aria-checked": String(watchOn),
+          onclick: () => setWatch(!watchOn) },
+        el("span", { class: "track", "aria-hidden": "true" }),
+        watchOn ? `On since ${timeFormat.format(new Date(s.watch.started))}` : "Off"),
+        watchOn && s.watch.counts.moved ? el("span", { class: "muted", text: `${plural(s.watch.counts.moved, "file")} sorted so far` }) : null)
+      : el("p", { class: "muted", text: "Auto-sort isn't included in this copy of the app. If you run it from the "
+        + "source code, install the extra package with: pip install watchdog" }));
+
+  let result = null;
+  if (s.job) {
+    const title = busy ? (s.job.kind === "preview" ? "Previewing…" : "Sorting…")
+      : `${s.job.kind === "preview" ? "Preview" : "Sort"} finished at ${timeFormat.format(new Date(s.job.finished))}`;
+    result = el("div", { class: "card" },
+      el("p", { class: busy ? "result-line running" : "result-line", text: title }),
+      el("p", { text: s.job.error ? s.job.error : jobSummary(s.job) }));
+  }
+
+  const visible = s.log.filter((entry) => s.showAll || !QUIET_LEVELS.has(entry.level));
+  const hidden = s.log.length - visible.length;
+  const logCard = el("div", { class: "card" },
+    el("div", { class: "row", style: { justifyContent: "space-between" } },
+      el("h2", { text: "Log" }),
+      el("label", {},
+        el("input", { type: "checkbox", checked: s.showAll, onchange: (e) => { s.showAll = e.target.checked; renderSorting(); } }),
+        `Show files that were left as they are${hidden ? ` (${hidden})` : ""}`)),
+    visible.length
+      ? el("div", { class: "log-box" }, el("ol", {}, ...visible.slice(-500).map((entry) =>
+        el("li", { class: entry.level },
+          el("span", { class: "when", text: timeFormat.format(new Date(entry.time)) }),
+          el("span", { class: "tag", text: entry.source === "watch" && entry.level === "moved" ? "Auto-sorted" : LOG_TAGS[entry.level] || "" }),
+          el("span", { class: "text", text: friendly(entry.text) })))))
+      : el("p", { class: "muted", text: "Nothing yet. Press Preview or Sort files now." }));
+
+  const main = $("main");
+  const box = main.querySelector(".log-box");
+  const stuckToBottom = !box || box.scrollTop + box.clientHeight >= box.scrollHeight - 20;
+  setChildren(main, el("section", { class: "sorter" },
+    el("div", { class: "cards-2" }, sortCard, watchCard), result, logCard));
+  const newBox = main.querySelector(".log-box");
+  if (newBox && stuckToBottom) newBox.scrollTop = newBox.scrollHeight; // follow new lines unless you scrolled up
 }
 
 // Detail panel
@@ -731,6 +896,7 @@ $("user").addEventListener("change", () => {
 });
 $("view-grid").addEventListener("click", () => setView("grid"));
 $("view-activity").addEventListener("click", () => setView("activity"));
+$("view-sorting").addEventListener("click", () => setView("sorting"));
 $("toggle-mine").addEventListener("click", () => { state.mine = !state.mine; renderToolbar(); renderMain(); });
 $("toggle-attention").addEventListener("click", () => { state.attention = !state.attention; renderToolbar(); renderMain(); });
 $("panel-close").addEventListener("click", closePanel);
@@ -783,8 +949,8 @@ $("welcome-form").addEventListener("submit", () => {
 (async () => {
   await loadAll();
   if (state.project) welcomeIfNew();
-  if (location.hash === "#activity") {
-    setView("activity");
+  if (location.hash === "#activity" || location.hash === "#sorting") {
+    setView(location.hash.slice(1));
   } else {
     const [name, task] = location.hash.slice(1).split("/").map(decodeURIComponent);
     if (name && state.overview) await openEntity(name, task || null);
