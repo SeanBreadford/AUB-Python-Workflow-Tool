@@ -23,7 +23,11 @@ arrives, so it uses the files as evidence:
 The project browser presents all of this in ShotGrid's familiar layout,
 in plain words.
 
+![The project browser: a status grid of every shot, with SH01 open showing a "changed after approval" warning and one-click fixes](docs/screenshots/panel-approved.png)
+
 ## Try it
+
+Run `python app.py` and press **Try the demo**, or from the command line:
 
 ```bash
 python main.py --root ~/tup-demo --demo     # builds a sample project in an empty folder
@@ -65,47 +69,72 @@ The demo recreates one real production problem per shot:
 ## Project browser
 
 A web page the app serves from your own computer. Open it from the desktop
-app, or:
+app, or run the following. (The screenshots are of the `--demo` project.)
 
 ```bash
 python main.py --root ~/TUP --serve
 ```
 
-- **Shots & Assets**: one row per shot (grouped by act and sequence) or
-  asset, one column per task, each cell a status chip. Chips show plain
-  labels (*Waiting*, *In progress*, *In review*, *Retake*, *Approved*), with
-  the full name and code on hover. Colours meet WCAG AA contrast, and
-  status never relies on colour alone. Tasks that haven't started are drawn
-  quietly so progress stands out.
-- **Warnings**: a solid ring and `!` marks a problem (version clash,
-  changed after approval, newer than what was sent for review). A dashed
-  outline and `…` marks a stalled task.
+### Shots & Assets
+
+![Status grid: one row per shot, one column per task, with warning rings on SH01, SH02 and SH04](docs/screenshots/grid.png)
+
+- One row per shot (grouped by act and sequence) or asset, one column per
+  task, each cell a status chip. Chips show plain labels (*Waiting*, *In
+  progress*, *In review*, *Retake*, *Approved*), with the full name and code
+  on hover. Colours meet WCAG AA contrast, and status never relies on colour
+  alone. Tasks that haven't started are drawn quietly so progress stands out.
+- **Warnings**: a solid ring and `!` marks a problem (version clash, changed
+  after approval, newer than what was sent for review). A dashed outline and
+  `…` marks a stalled task.
 - **Filters**: click statuses in the legend to show only those; **My
   Tasks**, **Needs attention**, and search by name (press `/`).
-- **Detail panel**: click a shot or chip. One-click actions follow the
-  workflow: **Start working**, **Submit for review**, **Approve**,
-  **Request changes** (needs a note) or **Reopen**, plus **Post note** and
-  **Assign to me**. A note sent with a button is attached to that change.
-  **More options** sets any status or assignee. Warnings explain what to
-  do, with a button where there's an obvious fix, such as **Approve newest
-  version**.
+- The summary line counts what needs you: warnings, stalled tasks, your
+  **Inbox**, and files not sorted yet. Each one is a link to the right view.
+
+### Detail panel
+
+![SH02 open: a "newer than what was sent for review" warning, a plain summary, and Approve / Request changes buttons](docs/screenshots/panel-review.png)
+
+- Click a shot or chip. A one-line summary says where the task is ("Pending
+  review since 18 Nov by alex. Newest version: v002 by alex.").
+- One-click actions follow the workflow: **Start working**, **Submit for
+  review**, **Approve**, **Request changes** (needs a note) or **Reopen**,
+  plus **Post note** and **Assign to me**. A note sent with a button is
+  attached to that change. **More options** sets any status or assignee.
+- Warnings explain what to do, with a button where there's an obvious fix,
+  such as **Approve newest version** or **Submit newest for review**.
 - **Versions**: every version of every file, marked *latest* and
-  *approved* / *sent for review*. Images and H.264 video play in the page,
-  and image sequences show their middle frame. With Pillow installed, the
-  grid and lists use small cached thumbnails (a 21 MB 4K render becomes a
-  6 KB preview) and TIFF, TGA and BMP get previews too. **Show in folder**
-  opens the file's folder. EXR and scene files are listed without a preview.
-- **Activity and Inbox**: a feed of every saved version, status change and
-  note, newest first. Changes by others on your tasks that you haven't seen
-  are highlighted and counted in your **Inbox**.
+  *approved* / *sent for review*, with who saved it. Images and H.264 video
+  play in the page, and image sequences show their middle frame. With Pillow
+  installed, the grid and lists use small cached thumbnails (a 21 MB 4K
+  render becomes a 6 KB preview) and TIFF, TGA and BMP get previews too.
+  **Show in folder** opens the file's folder. EXR and scene files are listed
+  without a preview.
+
+### Activity and Inbox
+
+![Activity feed grouped by day: files saved, statuses moved by new files, and feedback on your task highlighted](docs/screenshots/activity.png)
+
+A feed of every saved version, status change, assignment and note, newest
+first, grouped by day. Changes by others on your tasks that you haven't seen
+are highlighted and counted in your **Inbox**.
+
+### Sorting
+
+![Sorting view: Preview and Sort files now, the Auto-sort switch, a one-sentence result and a plain-language log](docs/screenshots/sorting.png)
+
+**Preview** shows where each file would go, **Sort files now** moves them,
+and **Auto-sort** keeps sorting new files as they arrive. The result is
+summed up in a sentence ("4 files moved, 2 waiting (still syncing or open)"), and the
+log reads as plain sentences, with routine "already in place" lines hidden
+unless you ask for them.
+
+### Everything else
+
 - **Live**: other people's changes appear within a few seconds as cloud sync
   brings them in, without refreshing. Files are rescanned every 30 seconds,
   after a sort, or when you press **Refresh**.
-- **Sorting**: **Preview** shows where each file would go, **Sort files
-  now** moves them, and **Auto-sort** keeps sorting new files as they
-  arrive. The result is summed up in a sentence ("4 files moved, 2 waiting:
-  still syncing"), and the log reads as plain sentences, with routine
-  "already in place" lines hidden unless you ask for them.
 - **Friendly**: the first visit asks your name, **?** opens a short guide,
   links like `#SH05/layout` open straight to a task, and if the app is
   closed or a file is locked by the sync app, the page says so plainly.
@@ -165,6 +194,8 @@ computer's clock, keep clocks set automatically.
 ```bash
 python app.py
 ```
+
+![The launcher: a project folder box, Open Project Browser and Try the demo](docs/screenshots/launcher.png)
 
 A small launcher. Pick your team's **project folder** once (it's
 remembered) and press **Open Project Browser**; everything else happens in
@@ -315,3 +346,4 @@ Known limitations:
 | `demo.py` | Sample project for `--demo` |
 | `config.py` | Tool settings (timings, config location) |
 | `tests/` | Unit tests |
+| `docs/screenshots/` | README images |
